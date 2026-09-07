@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Stream Multiview</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <header class="popup-header">
+      <div class="brand-mark" aria-hidden="true">✦</div>
+      <div>
+        <h1>Stream Multiview</h1>
+        <p>영상 멀티뷰</p>
+      </div>
+      <span id="live-count" class="live-count">확인 중</span>
+    </header>
+
+    <main>
+      <div class="quick-actions">
+        <button id="select-live" class="soft-button" type="button">● 방송 중만 선택</button>
+        <button id="add-current" class="soft-button" type="button">＋ 현재 탭 추가</button>
+      </div>
+
+      <div id="member-groups" class="member-groups" aria-live="polite"></div>
+
+      <form id="add-form" class="add-form">
+        <label for="stream-input">치지직 또는 YouTube 추가</label>
+        <div class="input-row">
+          <input id="stream-input" type="text" autocomplete="off" spellcheck="false"
+            placeholder="방송 URL을 붙여넣으세요">
+          <button type="submit" aria-label="방송 추가">추가</button>
+        </div>
+        <p id="form-message" class="form-message" role="status"></p>
+      </form>
+
+      <section class="selection-summary" aria-label="선택한 방송">
+        <div>
+          <strong id="selected-count">0개 선택</strong>
+          <span id="custom-count">사용자 방송 0개</span>
+        </div>
+        <button id="clear-selection" type="button">비우기</button>
+      </section>
+    </main>
+
+    <footer>
+      <button id="open-viewer" class="primary-button" type="button" disabled>
+        선택한 방송으로 멀티뷰 열기
+      </button>
+      <p>로그인 쿠키나 재생 URL은 읽거나 저장하지 않습니다.</p>
+    </footer>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

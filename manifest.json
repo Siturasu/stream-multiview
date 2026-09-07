@@ -1,0 +1,68 @@
+{
+  "manifest_version": 3,
+  "name": "Stream Multiview",
+  "short_name": "Stream Multiview",
+  "version": "0.1.6",
+  "description": "개인용 영상 멀티뷰 확장 프로그램",
+  "minimum_chrome_version": "121",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "activeTab",
+    "declarativeNetRequestWithHostAccess",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://chzzk.naver.com/*",
+    "https://api.chzzk.naver.com/*",
+    "https://www.youtube.com/*"
+  ],
+  "action": {
+    "default_title": "Stream Multiview 열기",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chzzk.naver.com/*"
+      ],
+      "js": [
+        "content/chzzk-main.js"
+      ],
+      "css": [
+        "content/chzzk-embed.css"
+      ],
+      "all_frames": true,
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://chzzk.naver.com/live/*",
+        "https://www.youtube.com/embed/*"
+      ],
+      "js": [
+        "content/frame-activity.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_start"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; frame-src https://chzzk.naver.com https://www.youtube.com; connect-src https://api.chzzk.naver.com https://www.youtube.com; img-src 'self' data: https://*.pstatic.net https://*.naver.net https://*.googleusercontent.com;"
+  }
+}

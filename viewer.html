@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Stream Multiview 멀티뷰</title>
+    <link rel="stylesheet" href="viewer.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <button id="sidebar-toggle" class="icon-button" type="button" aria-label="방송 선택 패널 열기" aria-expanded="true">☰</button>
+      <a class="brand" href="viewer.html" aria-label="Stream Multiview 홈">
+        <span aria-hidden="true">✦</span>
+        <strong>Stream Multiview</strong>
+      </a>
+      <span id="stream-count" class="stream-count">0 streams</span>
+
+      <div class="topbar-spacer"></div>
+
+      <label class="compact-field">
+        <span>치지직 화질</span>
+        <select id="quality-select">
+          <option value="1080p">1080p</option>
+          <option value="720p">720p</option>
+          <option value="480p">480p</option>
+          <option value="360p">360p</option>
+        </select>
+      </label>
+      <label class="compact-field">
+        <span>배치</span>
+        <select id="layout-select">
+          <option value="auto">자동</option>
+          <option value="1">1열</option>
+          <option value="2">2열</option>
+          <option value="3">3열</option>
+          <option value="4">4열</option>
+        </select>
+      </label>
+      <button id="mute-all" class="toolbar-button" type="button">모두 음소거</button>
+      <button id="chat-toggle" class="toolbar-button" type="button" aria-pressed="true">채팅</button>
+      <button id="fullscreen" class="icon-button" type="button" aria-label="전체 화면" title="전체 화면">⛶</button>
+    </header>
+
+    <div class="app-shell">
+      <aside id="sidebar" class="sidebar">
+        <div class="sidebar-heading">
+          <div>
+            <span class="eyebrow">STREAM LIBRARY</span>
+            <h2>방송 선택</h2>
+          </div>
+          <button id="refresh-status" class="icon-button" type="button" aria-label="방송 상태 새로고침">↻</button>
+        </div>
+
+        <div class="sidebar-actions">
+          <button id="viewer-select-live" type="button">● 방송 중 모두</button>
+          <button id="viewer-clear" type="button">전체 해제</button>
+        </div>
+
+        <div id="viewer-member-groups" class="viewer-member-groups"></div>
+
+        <form id="viewer-add-form" class="viewer-add-form">
+          <label for="viewer-stream-input">다른 방송 추가</label>
+          <textarea id="viewer-stream-input" rows="2" spellcheck="false"
+            placeholder="치지직·YouTube URL 또는 ID"></textarea>
+          <button type="submit">＋ 방송 추가</button>
+          <p id="viewer-form-message" role="status"></p>
+        </form>
+
+        <section class="settings-card">
+          <h3>재생 설정</h3>
+          <label class="switch-row">
+            <span>
+              <strong>직접 HLS 사용</strong>
+              <small>공식 CDN에서 고화질 재생</small>
+            </span>
+            <input id="grid-bypass" type="checkbox">
+          </label>
+          <label class="switch-row">
+            <span>
+              <strong>마지막 구성 기억</strong>
+              <small>방송 목록과 순서를 이 브라우저에 저장</small>
+            </span>
+            <input id="remember-session" type="checkbox">
+          </label>
+        </section>
+
+        <p class="privacy-note">Naver 로그인 세션은 치지직 iframe이 브라우저에서 직접 사용합니다. Stream Multiview는 쿠키 값을 읽거나 복사하지 않습니다.</p>
+      </aside>
+
+      <main id="workspace" class="workspace">
+        <section id="stream-grid" class="stream-grid" aria-label="멀티뷰 방송 화면">
+          <div id="empty-state" class="empty-state">
+            <span aria-hidden="true">✦</span>
+            <h2>보고 싶은 방송을 골라보세요</h2>
+            <p>왼쪽에서 스텔라이브 멤버를 선택하거나 방송 URL을 추가하면 바로 분할 화면이 만들어집니다.</p>
+            <button id="empty-open-sidebar" type="button">방송 선택하기</button>
+          </div>
+        </section>
+
+        <aside id="chat-panel" class="chat-panel">
+          <div class="chat-header">
+            <div>
+              <span>CHAT</span>
+              <strong id="chat-title">채팅을 선택하세요</strong>
+            </div>
+            <button id="chat-close" class="icon-button" type="button" aria-label="채팅 닫기">×</button>
+          </div>
+          <div id="chat-empty" class="chat-empty">
+            <p>타일 위 <strong>채팅</strong> 버튼을 누르면 해당 방송의 채팅이 열립니다.</p>
+          </div>
+          <iframe id="chat-frame" title="방송 채팅" hidden></iframe>
+        </aside>
+      </main>
+    </div>
+
+    <template id="tile-template">
+      <article class="stream-tile">
+        <iframe class="stream-frame" referrerpolicy="strict-origin-when-cross-origin" allow="autoplay; fullscreen; encrypted-media; picture-in-picture; local-network-access; local-network; loopback-network" allowfullscreen></iframe>
+        <div class="tile-gradient"></div>
+        <header class="tile-header">
+          <div class="tile-identity">
+            <span class="platform-pill"></span>
+            <div>
+              <strong class="tile-name"></strong>
+              <small class="tile-subtitle"></small>
+            </div>
+          </div>
+          <div class="tile-actions">
+            <!-- Not a <button>: Chromium never starts a drag from form controls, even
+     with draggable="true", so the handle must be a plain element. -->
+            <span class="drag-handle" draggable="true" role="button" tabindex="0" aria-label="끌어서 방송 순서 변경" title="끌어서 순서 변경">⠿</span>
+            <span class="quality-pill">대기 중</span>
+            <button type="button" data-action="audio">소리</button>
+            <button type="button" data-action="chat">채팅</button>
+            <button type="button" data-action="reload" aria-label="방송 새로고침">↻</button>
+            <button type="button" data-action="open" aria-label="원본 방송 열기">↗</button>
+            <button type="button" data-action="remove" aria-label="분할 화면에서 제거">×</button>
+          </div>
+        </header>
+        <div class="drag-hint">끌어서 순서 변경</div>
+      </article>
+    </template>
+
+    <script type="module" src="viewer.js"></script>
+  </body>
+</html>

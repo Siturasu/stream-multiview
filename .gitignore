@@ -1,0 +1,9 @@
+tests/
+artifacts/
+HANDOFF*.md
+node_modules/
+.env*
+*.log
+*.zip
+.DS_Store
+Thumbs.db
