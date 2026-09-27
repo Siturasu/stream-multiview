@@ -3,6 +3,9 @@
 
   const params = new URLSearchParams(location.search);
   const isChatRoute = /\/chat\/?$/.test(location.pathname);
+  // A /video replay must not be resumed by a mute command: the original
+  // extension only ever hosted live channels, where "keep playing" is right.
+  const isReplay = /^\/video\//.test(location.pathname);
   let isEmbedded = false;
   try {
     isEmbedded = window.self !== window.top;
@@ -13,7 +16,7 @@
   if (
     !isEmbedded ||
     isChatRoute ||
-    params.get("sv") !== "1"
+    (params.get("sv") !== "1" && globalThis.__stellaViewManagedFrame !== true)
   ) {
     return;
   }
@@ -34,6 +37,24 @@
   let desiredMuted = params.get("muted") !== "0";
   let viewerOrigin = null;
   const pendingViewerMessages = new Map();
+  // Chrome hosts the viewer on chrome-extension://<id>. Other hosts (the iOS
+  // WKWebView wrapper) announce their viewer origin before this script runs.
+  const viewerOriginPattern = /^chrome-extension:\/\/[a-p]{32}$/;
+  const configuredViewerOrigin =
+    typeof globalThis.__stellaViewViewerOrigin === "string"
+      ? globalThis.__stellaViewViewerOrigin
+      : null;
+  // The wrappers inject this script with a viewer origin or as a managed
+  // frame. Only they get the iPad media handling below; the Chrome extension
+  // keeps the original mute/play behaviour so the player's own controls work.
+  const wrapperHost = configuredViewerOrigin !== null || globalThis.__stellaViewManagedFrame === true;
+
+  function isViewerOrigin(origin) {
+    return (
+      viewerOriginPattern.test(origin) ||
+      (configuredViewerOrigin !== null && origin === configuredViewerOrigin)
+    );
+  }
 
   function writeQualityPreference() {
     try {
@@ -181,13 +202,241 @@
 
   installDirectHlsBridge();
 
-  function applyMutedState(root = document) {
+  const pendingAudioStart = new WeakMap();
+  const preparedVideos = new WeakSet();
+
+  function prepareVideo(video) {
+    // VOD players can create a fresh video and call play before MutationObserver
+    // runs. Configure inline playback and audio focus before that first play.
+    video.playsInline = true;
+    video.setAttribute("playsinline", "");
+    video.setAttribute("webkit-playsinline", "");
+    if (!preparedVideos.has(video)) {
+      preparedVideos.add(video);
+      video.addEventListener("playing", () => {
+        // WebKit can dispatch `playing` before admitting the media session.
+        // The play promise, when present, owns the later audio restoration.
+        prepareVideo(video);
+      });
+    }
+    const muted = desiredMuted || video.paused || pendingAudioStart.has(video);
+    if (video.defaultMuted !== muted) video.defaultMuted = muted;
+    if (video.muted !== muted) video.muted = muted;
+  }
+
+  // Wrappers only: the page's play() is wrapped so every start is muted and
+  // inline first. Chrome plays audio from several tiles without it.
+  if (wrapperHost) {
+    const originalPlay = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function (...args) {
+      let audioStart;
+      if (this instanceof HTMLVideoElement) {
+        // Starting a second audible element can interrupt another iPad video.
+        // Start/restart inline and muted, then restore this tile's chosen audio
+        // after its play promise settles (the playing event can be too early).
+        if (this.paused || pendingAudioStart.has(this)) {
+          audioStart = {};
+          pendingAudioStart.set(this, audioStart);
+        }
+        prepareVideo(this);
+      }
+      const result = originalPlay.apply(this, args);
+      if (!audioStart) return result;
+      return result.then(() => {
+        if (pendingAudioStart.get(this) !== audioStart) return;
+        pendingAudioStart.delete(this);
+        prepareVideo(this);
+      }, (error) => {
+        if (pendingAudioStart.get(this) === audioStart) pendingAudioStart.delete(this);
+        throw error;
+      });
+    };
+  }
+
+  function applyMutedState(root = document, startPlayback = false) {
     const videos = root instanceof HTMLVideoElement ? [root] : root.querySelectorAll?.("video") || [];
     for (const video of videos) {
       try {
-        video.defaultMuted = desiredMuted;
-        video.muted = desiredMuted;
-        if (video.paused) video.play().catch(() => {});
+        if (wrapperHost) {
+          prepareVideo(video);
+          if (startPlayback && video.paused) video.play().catch(() => {});
+        } else {
+          // The original extension behaviour: apply the viewer's mute and
+          // keep a live tile playing on every call. A paused replay only
+          // starts when its element is first seen.
+          video.defaultMuted = desiredMuted;
+          video.muted = desiredMuted;
+          if (video.paused && (startPlayback || !isReplay)) video.play().catch(() => {});
+        }
+      } catch {
+        // The player can replace the media element during a quality switch.
+      }
+    }
+  }
+
+  // Per-tile volume. The element setter is tried first. iPadOS ignores it and
+  // reads back 1, so a Web Audio gain node is the fallback -- but only for an
+  // MSE-fed element (`blob:` source). A `data:` or `http(s)` source means
+  // native HLS with cross-origin segments, where createMediaElementSource
+  // would taint the graph and output silence, so that case reports "none".
+  //
+  // Mirrored verbatim between content/chzzk-main.js and
+  // content/youtube-volume-frame.js; keep the two copies equal.
+  function createVolumeController(reportMode) {
+    const tolerance = 0.01;
+    const states = new WeakMap();
+    const graphs = new WeakMap();
+    const applying = new WeakSet();
+    let audioContext = null;
+    let audioContextUnavailable = false;
+    let desiredVolume = 1;
+    let volumeRequested = false;
+    let reportedMode = null;
+
+    function frameAudioContext() {
+      if (audioContext || audioContextUnavailable) return audioContext;
+      const Context = globalThis.AudioContext || globalThis.webkitAudioContext;
+      if (typeof Context !== "function") {
+        audioContextUnavailable = true;
+        return null;
+      }
+      try {
+        audioContext = new Context();
+      } catch {
+        audioContextUnavailable = true;
+      }
+      return audioContext;
+    }
+
+    function resumeAudioContext() {
+      try {
+        audioContext?.resume?.()?.catch?.(() => {});
+      } catch {
+        // A context that stays suspended resumes on the next user gesture.
+      }
+    }
+
+    // One MediaElementAudioSourceNode per element, created at most once: a
+    // second call throws and would leave that element permanently silent.
+    function audioGraph(video) {
+      if (graphs.has(video)) return graphs.get(video);
+      const context = frameAudioContext();
+      if (!context) return null;
+      let graph = null;
+      try {
+        const source = context.createMediaElementSource(video);
+        const gain = context.createGain();
+        source.connect(gain).connect(context.destination);
+        graph = { source, gain };
+      } catch {
+        // Already routed elsewhere, or unsupported by this engine.
+      }
+      graphs.set(video, graph);
+      return graph;
+    }
+
+    function readVolume(video) {
+      try {
+        return typeof video.volume === "number" ? video.volume : 1;
+      } catch {
+        return 1;
+      }
+    }
+
+    function currentSource(video) {
+      return typeof video.currentSrc === "string" ? video.currentSrc : "";
+    }
+
+    function remember(video, mode, src) {
+      states.set(video, { target: desiredVolume, mode, src });
+      if (mode !== reportedMode) {
+        reportedMode = mode;
+        reportMode(mode);
+      }
+      return mode;
+    }
+
+    function applyNow(video) {
+      const src = currentSource(video);
+      const state = states.get(video);
+      // An element that ignores the setter only needs work when the request
+      // or the source changes. Re-applying would answer its own volumechange.
+      if (state && state.mode !== "element" && state.target === desiredVolume && state.src === src) {
+        return state.mode;
+      }
+
+      const graph = graphs.get(video);
+      if (graph) {
+        graph.gain.gain.value = desiredVolume;
+        resumeAudioContext();
+        return remember(video, "webaudio", src);
+      }
+
+      if (Math.abs(readVolume(video) - desiredVolume) >= tolerance) {
+        try {
+          video.volume = desiredVolume;
+        } catch {
+          // A detached element can throw while the player swaps sources.
+        }
+      }
+      if (Math.abs(readVolume(video) - desiredVolume) < tolerance) return remember(video, "element", src);
+
+      // Without a source the element cannot be classified yet. The
+      // loadedmetadata listener runs this again once it has one.
+      if (!src) return null;
+      if (!src.startsWith("blob:")) return remember(video, "none", src);
+      const created = audioGraph(video);
+      if (!created) return remember(video, "none", src);
+      created.gain.gain.value = desiredVolume;
+      resumeAudioContext();
+      return remember(video, "webaudio", src);
+    }
+
+    return {
+      // Anything but a finite number is refused, so a malformed message
+      // cannot silence a tile.
+      request(volume) {
+        if (typeof volume !== "number" || !Number.isFinite(volume)) return false;
+        desiredVolume = Math.min(1, Math.max(0, volume));
+        volumeRequested = true;
+        return true;
+      },
+      requested() {
+        return volumeRequested;
+      },
+      // The 1.0 default means "leave the site alone": nothing is written and
+      // no capability is reported until the viewer asks for a volume.
+      apply(video) {
+        if (!volumeRequested || applying.has(video)) return states.get(video)?.mode ?? null;
+        applying.add(video);
+        try {
+          return applyNow(video);
+        } finally {
+          applying.delete(video);
+        }
+      },
+    };
+  }
+
+  const volumeControl = createVolumeController((mode) => {
+    postToViewer({ type: "volume-capability", supported: mode !== "none", mode });
+  });
+
+  // While the viewer has not asked for a volume, tell it the player's own
+  // level so the panel can show it (and start a drag from it) instead of 100.
+  function reportSiteVolume(video) {
+    // The wrappers always apply a panel value, so only the extension listens.
+    if (wrapperHost || volumeControl.requested()) return;
+    const volume = typeof video.volume === "number" ? video.volume : 1;
+    postToViewer({ type: "volume-state", volume });
+  }
+
+  // Mute stays independent of volume; this only scales the audible level.
+  function applyDesiredVolume(root = document) {
+    const videos = root instanceof HTMLVideoElement ? [root] : root.querySelectorAll?.("video") || [];
+    for (const video of videos) {
+      try {
+        volumeControl.apply(video);
       } catch {
         // The player can replace the media element during a quality switch.
       }
@@ -208,7 +457,7 @@
       const parent = node.parentElement;
       if (!parent) break;
       for (const sibling of parent.children) {
-        if (sibling !== node) sibling.classList.add("sv-shell-hidden");
+        if (sibling !== node && !sibling.classList.contains("sv-session-panel")) sibling.classList.add("sv-shell-hidden");
       }
       node = parent;
     }
@@ -300,11 +549,33 @@
 
   function trackVideo(video) {
     if (!(video instanceof HTMLVideoElement)) return;
-    applyMutedState(video);
+    // The original extension re-applied the mute (and play) whenever an
+    // element was seen again, e.g. re-inserted by the player.
+    if (!wrapperHost) applyMutedState(video);
     if (video.dataset.stellaViewTracked === "1") return;
     video.dataset.stellaViewTracked = "1";
+    // Wrappers try autoplay once for a new element; later mute/fullscreen/
+    // quality updates must not resume a video the viewer or player has paused.
+    // Chrome keeps the original behaviour and plays on every applyMutedState.
+    applyMutedState(video, true);
+    applyDesiredVolume(video);
+    // Wrappers re-assert the viewer's mute on every play and volumechange. In
+    // Chrome that would make the player's own mute button dead, so only the
+    // volume (inert until the viewer sends set-volume) is re-applied there.
+    if (wrapperHost) video.addEventListener("play", () => prepareVideo(video));
+    video.addEventListener("volumechange", () => {
+      if (wrapperHost) prepareVideo(video);
+      // The site restores its stored volume on a new element; put the
+      // viewer's value back whenever it drifts.
+      applyDesiredVolume(video);
+      reportSiteVolume(video);
+    });
     const checkQuality = () => {
       applyMutedState(video);
+      // `currentSrc` is only trustworthy once metadata exists, so the
+      // element/Web Audio decision is re-made here.
+      applyDesiredVolume(video);
+      reportSiteVolume(video);
       observeVideoQuality(video);
       postToViewer({ type: "player-ready" });
     };
@@ -344,7 +615,7 @@
   window.addEventListener("message", (event) => {
     if (
       event.source !== window.parent ||
-      !/^chrome-extension:\/\/[a-p]{32}$/.test(event.origin) ||
+      !isViewerOrigin(event.origin) ||
       event.data?.source !== "stellaview"
     ) {
       return;
@@ -357,6 +628,9 @@
     if (event.data.type === "set-muted" && typeof event.data.muted === "boolean") {
       desiredMuted = event.data.muted;
       applyMutedState();
+    }
+    if (event.data.type === "set-volume" && volumeControl.request(event.data.volume)) {
+      applyDesiredVolume();
     }
   });
 })();

@@ -37,9 +37,23 @@
         </select>
       </label>
       <button id="mute-all" class="toolbar-button" type="button">모두 음소거</button>
+      <button id="volume-toggle" class="toolbar-button" type="button" aria-pressed="false" aria-expanded="false" aria-controls="volume-panel">볼륨</button>
       <button id="chat-toggle" class="toolbar-button" type="button" aria-pressed="true">채팅</button>
       <button id="fullscreen" class="icon-button" type="button" aria-label="전체 화면" title="전체 화면">⛶</button>
     </header>
+
+    <aside id="volume-panel" class="volume-panel" aria-label="볼륨 조절">
+      <div class="volume-panel-head">
+        <strong>볼륨</strong>
+        <button id="volume-panel-close" class="icon-button" type="button" aria-label="볼륨 패널 닫기">×</button>
+      </div>
+      <div id="volume-rows" class="volume-rows"></div>
+      <p id="volume-empty" class="volume-empty">추가된 방송이 없습니다.</p>
+      <div class="volume-panel-foot">
+        <button id="volume-mute-all" type="button">모두 음소거</button>
+        <button id="volume-max-all" type="button">모두 100%</button>
+      </div>
+    </aside>
 
     <div class="app-shell">
       <aside id="sidebar" class="sidebar">

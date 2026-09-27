@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Stream Multiview</string>
+    <string name="login_title">계정 로그인</string>
+    <string name="login_chzzk">치지직 (네이버)</string>
+    <string name="login_youtube">유튜브 (구글)</string>
+    <string name="login_done">완료</string>
+    <string name="login_recheck">다시 확인</string>
+    <string name="login_status_waiting">로그인 뒤 치지직 화면에서 상태를 확인합니다.</string>
+    <string name="login_status_checking">치지직 로그인 상태 확인 중…</string>
+    <string name="login_status_signed_in">치지직 로그인이 확인됐습니다. 완료를 눌러 주세요.</string>
+    <string name="login_status_signed_out">치지직 로그인이 확인되지 않았습니다.</string>
+    <string name="login_status_unavailable">치지직 로그인 상태를 확인하지 못했습니다. 다시 확인을 눌러 주세요.</string>
+    <string name="login_keep_signed_in_hint">네이버 로그인 화면에서 \'로그인 상태 유지\'를 켜면 앱을 다시 켜도 유지됩니다.</string>
+    <string name="login_load_error">페이지를 불러오지 못했습니다: %1$s</string>
+    <string name="login_diagnostics_show">진단 ▸</string>
+    <string name="login_diagnostics_hide">진단 ▾</string>
+    <string name="login_diagnostics_copy">진단 복사</string>
+    <string name="login_diagnostics_copied">복사됨</string>
+    <string name="login_diagnostics_refresh">진단 새로고침</string>
+    <string name="login_diagnostics_clip_label">Stream Multiview 진단</string>
+</resources>

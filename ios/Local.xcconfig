@@ -1,0 +1,4 @@
+// 본인 Apple 계정의 Team ID (10자리). Xcode > Settings > Accounts > 계정 선택 > 팀 목록에서 확인.
+// 비워 두면 기기 빌드가 "Signing requires a development team"으로 실패한다. 시뮬레이터 빌드는 무관.
+// project.yml이 이 파일을 configFiles로 참조하므로 xcodegen generate 를 다시 돌려도 값이 유지된다.
+DEVELOPMENT_TEAM =

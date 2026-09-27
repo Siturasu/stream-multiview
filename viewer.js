@@ -17,12 +17,21 @@ const DEFAULT_SETTINGS = Object.freeze({
   gridBypass: true,
   chatOpen: true,
   rememberSession: true,
+  volumes: Object.freeze({}),
 });
 const FULLSCREEN_CONTROLS_HIDE_DELAY_MS = 1_800;
+const DEFAULT_VOLUME = 100;
+const VOLUME_UNSUPPORTED_HINT = "이 기기에서는 볼륨 조절이 되지 않아 소리 켬/끔만 가능합니다";
 const chzzkPresets = STREAM_PRESETS.filter((preset) => preset.platform === "chzzk");
 const presetKeys = new Set(STREAM_PRESETS.map((preset) => streamKey(presetStream(preset))));
 
 const body = document.body;
+// The Chrome extension keeps the original desktop behaviour. The iPad and
+// Android wrappers load these same files from an https origin and opt into
+// the touch additions (fullscreen overlay bar, always-applied volume)
+// through this class and flag.
+const isWrapperHost = location.protocol !== "chrome-extension:";
+body.classList.toggle("sv-wrapper", isWrapperHost);
 const grid = document.querySelector("#stream-grid");
 const emptyState = document.querySelector("#empty-state");
 const tileTemplate = document.querySelector("#tile-template");
@@ -40,16 +49,31 @@ const addForm = document.querySelector("#viewer-add-form");
 const addInput = document.querySelector("#viewer-stream-input");
 const formMessage = document.querySelector("#viewer-form-message");
 const fullscreenButton = document.querySelector("#fullscreen");
+const volumeToggle = document.querySelector("#volume-toggle");
+const volumeRowList = document.querySelector("#volume-rows");
+const volumeEmpty = document.querySelector("#volume-empty");
 const youtubeOrigin = youtubeClientOrigin(chrome.runtime.id);
 
 let settings = { ...DEFAULT_SETTINGS };
 let streams = [];
-let activeAudioKey = null;
+const activeAudioKeys = new Set();
 let activeChatKey = null;
 let draggingKey = null;
 let hasCompleteStatusSnapshot = false;
 const metadata = new Map();
 const tiles = new Map();
+// key -> 0..100. A missing entry means the default volume on the wrappers and
+// the player's own volume in the extension (see applyVolumeState).
+const tileVolumes = new Map();
+// key -> { supported, mode } as reported by the player frame.
+const volumeCapabilities = new Map();
+// key -> 0..100, the player's own volume as reported by the frame while the
+// tile is untouched (extension only). Shown as the slider position so the
+// first drag starts from the real level instead of jumping from 100.
+const siteVolumes = new Map();
+// key -> the volume panel row nodes, kept alive so a dragged slider survives
+// unrelated re-renders.
+const volumeRows = new Map();
 let youtubeIdentityReady = false;
 let fullscreenControlsTimer = null;
 
@@ -88,6 +112,45 @@ function clearFullscreenControlsTimer() {
   }
 }
 
+// Chrome never sets :focus-visible on a control focused by pointer, so a held
+// slider or a pointer resting on the bar looks idle to the timer. :hover and
+// :active are the pointer-user signals; :focus-visible only covers the
+// keyboard. A range input captures the pointer, so its moves stop arriving
+// here: the press itself is tracked instead.
+// Wrapper-only in effect: the extension hides the bar and the volume panel in
+// fullscreen (display:none), so this and the frame-activity flag stay inert.
+let fullscreenPointerHeld = false;
+// The player frames are out-of-process. Once the pointer moves into one, this
+// document receives nothing at all (measured in fullscreen: zero pointermove,
+// pointerout and mouseout) and :hover keeps naming the bar the pointer left,
+// which would hold the overlay open for good. The frames relay their own
+// activity, so a relayed ping is the signal that the pointer is over a tile
+// and this document's :hover has gone stale.
+let fullscreenActivityFromFrame = false;
+
+function fullscreenChromeEngaged() {
+  // The extension has no fullscreen bar: only a keyboard-focused tile control
+  // holds the controls open, as in the original.
+  if (!isWrapperHost) return Boolean(document.querySelector(".tile-actions :focus-visible"));
+  if (fullscreenPointerHeld) return true;
+  if (document.querySelector(
+    ".volume-panel :active, .sv-overflow :active, .topbar :focus-visible, .volume-panel :focus-visible, .sv-overflow :focus-visible, .tile-actions :focus-visible",
+  )) {
+    return true;
+  }
+  return !fullscreenActivityFromFrame
+    && Boolean(document.querySelector(".topbar:hover, .volume-panel:hover, .sv-overflow:hover"));
+}
+
+// Activity this document saw itself, which makes :hover trustworthy again.
+function notePointerActivity(event) {
+  // A release can be lost to the OS app switcher or a context menu, so the
+  // held flag is also derived from the next move that reports no button down.
+  if (event?.type === "pointermove" && event.buttons === 0) fullscreenPointerHeld = false;
+  fullscreenActivityFromFrame = false;
+  noteFullscreenActivity();
+}
+
 function noteFullscreenActivity() {
   if (document.fullscreenElement !== document.documentElement) return;
   setFullscreenControlsHidden(false);
@@ -95,8 +158,7 @@ function noteFullscreenActivity() {
   fullscreenControlsTimer = setTimeout(() => {
     fullscreenControlsTimer = null;
     if (document.fullscreenElement === document.documentElement) {
-      const focusedControl = document.querySelector(".tile-actions :focus-visible");
-      if (focusedControl) {
+      if (fullscreenChromeEngaged()) {
         noteFullscreenActivity();
       } else {
         setFullscreenControlsHidden(true);
@@ -146,7 +208,7 @@ function getStream(key) {
 
 function displayName(stream) {
   if (stream.name) return stream.name;
-  if (stream.platform === "chzzk") return metadata.get(stream.channelId)?.name || "치지직 방송";
+  if (stream.platform === "chzzk") return stream.videoId ? "치지직 다시보기" : metadata.get(stream.channelId)?.name || "치지직 방송";
   return "YouTube";
 }
 
@@ -161,6 +223,11 @@ function formatViewers(value) {
 }
 
 async function saveSettings() {
+  // Volumes live in a Map at runtime. The stored copy is merged, not replaced:
+  // another viewer tab may have set tiles this one never showed, and a settings
+  // write from here (chat toggle, quality) must not wipe those.
+  const stored = await chrome.storage.local.get({ settings: {} });
+  settings.volumes = { ...sanitizeVolumes(stored.settings?.volumes), ...volumesToObject() };
   await chrome.storage.local.set({ settings });
 }
 
@@ -174,7 +241,10 @@ async function saveStreams() {
 
 async function setStreams(nextStreams) {
   streams = uniqueStreams(nextStreams);
-  if (activeAudioKey && !getStream(activeAudioKey)) activeAudioKey = null;
+  for (const key of activeAudioKeys) {
+    if (!getStream(key)) activeAudioKeys.delete(key);
+  }
+  pruneVolumeState();
   if (activeChatKey && !getStream(activeChatKey)) {
     activeChatKey = null;
     closeChatContent();
@@ -264,6 +334,7 @@ async function toggleMember(stream) {
     if (stream.platform === "youtube") await prepareYoutubeIdentity();
     await setStreams([...streams, stream]);
   }
+  closeCompactPanels();
 }
 
 function playerOptions() {
@@ -282,7 +353,9 @@ function updateTileText(tile, stream) {
   tile.querySelector(".tile-name").textContent = meta?.name || displayName(stream);
   tile.querySelector(".tile-subtitle").textContent = meta?.open
     ? `${meta.title || meta.category || "방송 중"} · ${formatViewers(meta.viewers)}`
-    : stream.platform === "chzzk"
+    : stream.platform === "chzzk" && stream.videoId
+      ? "다시보기"
+      : stream.platform === "chzzk"
       ? meta ? "현재 오프라인" : "치지직"
       : "YouTube";
 }
@@ -403,6 +476,7 @@ function reconcileTiles() {
 
   emptyState.hidden = streams.length > 0;
   if (!emptyState.hidden) grid.append(emptyState);
+  renderVolumePanel();
   updateAudioClasses();
 }
 
@@ -423,7 +497,7 @@ function handleTileAction(key, action) {
   if (!stream) return;
   switch (action) {
     case "audio":
-      setActiveAudio(activeAudioKey === key ? null : key);
+      setTileAudio(key, !activeAudioKeys.has(key));
       break;
     case "chat":
       openChat(key);
@@ -453,26 +527,257 @@ function sendYouTubeCommand(frame, muted) {
   frame.contentWindow?.postMessage(JSON.stringify(command), "https://www.youtube.com");
 }
 
+// Two messages on purpose. On Chrome both act: the IFrame API command updates
+// YouTube's own volume model, and the frame script applies the element volume,
+// reports whether that worked and keeps the model in sync. On the wrappers the
+// API volume is ignored and only the frame script does anything.
+function sendYouTubeVolume(frame, volume) {
+  const command = {
+    event: "command",
+    func: "setVolume",
+    args: [volume],
+  };
+  frame.contentWindow?.postMessage(JSON.stringify(command), "https://www.youtube.com");
+  frame.contentWindow?.postMessage(
+    { source: "stellaview", type: "set-volume", volume: volume / 100 },
+    "https://www.youtube.com",
+  );
+}
+
 function applyAudioState(tile, stream) {
-  const muted = activeAudioKey !== streamKey(stream);
+  const muted = !activeAudioKeys.has(streamKey(stream));
   const frame = tile.querySelector(".stream-frame");
   if (stream.platform === "chzzk") {
     sendChzzkCommand(frame, { type: "set-muted", muted });
   } else {
     sendYouTubeCommand(frame, muted);
   }
+  // Every audio handshake also restores the selected volume: player-ready,
+  // frame load, reload and unmute all reach the frame through this call.
+  applyVolumeState(tile, stream);
+}
+
+function clampVolume(value) {
+  const number = Math.round(Number(value));
+  if (!Number.isFinite(number)) return DEFAULT_VOLUME;
+  return Math.min(100, Math.max(0, number));
+}
+
+// Stored settings are untrusted: only integral in-range numbers survive, and
+// every other entry falls back to the default volume.
+function sanitizeVolumes(raw) {
+  const result = {};
+  if (!raw || typeof raw !== "object") return result;
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value !== "number" || !Number.isFinite(value)) continue;
+    if (value < 0 || value > 100) continue;
+    result[key] = Math.round(value);
+  }
+  return result;
+}
+
+function volumesToObject() {
+  const result = {};
+  for (const [key, value] of tileVolumes) result[key] = value;
+  return result;
+}
+
+function getTileVolume(key) {
+  return tileVolumes.has(key) ? tileVolumes.get(key) : DEFAULT_VOLUME;
+}
+
+function setTileVolume(key, value) {
+  const volume = clampVolume(value);
+  tileVolumes.set(key, volume);
+  const tile = tiles.get(key);
+  const stream = getStream(key);
+  if (tile && stream) applyVolumeState(tile, stream);
+  updateVolumeRow(key);
+  return volume;
+}
+
+// Set volumes are kept per stream key even after the tile is removed, so a
+// member toggled off and on (or re-added after a restart) gets its level back.
+// Only the frame reports, which belong to a live frame, are dropped.
+function pruneVolumeState() {
+  for (const key of [...volumeCapabilities.keys()]) {
+    if (!getStream(key)) volumeCapabilities.delete(key);
+  }
+  for (const key of [...siteVolumes.keys()]) {
+    if (!getStream(key)) siteVolumes.delete(key);
+  }
+}
+
+function applyVolumeState(tile, stream) {
+  // The extension leaves the player's own volume (and its saved level) alone
+  // until the panel slider for that tile is moved. The wrappers keep applying
+  // the panel value, default included, on every handshake.
+  if (!isWrapperHost && !tileVolumes.has(streamKey(stream))) return;
+  const frame = tile.querySelector(".stream-frame");
+  if (!frame) return;
+  const volume = getTileVolume(streamKey(stream));
+  if (stream.platform === "chzzk") {
+    sendChzzkCommand(frame, { type: "set-volume", volume: volume / 100 });
+  } else {
+    sendYouTubeVolume(frame, volume);
+  }
 }
 
 function updateAudioClasses() {
   for (const [key, tile] of tiles) {
-    const active = key === activeAudioKey;
+    const active = activeAudioKeys.has(key);
     tile.classList.toggle("is-audio-active", active);
-    tile.querySelector('[data-action="audio"]').textContent = active ? "소리 켬" : "소리";
+    const button = tile.querySelector('[data-action="audio"]');
+    button.textContent = active ? "소리 켬" : "소리";
+    button.setAttribute("aria-pressed", String(active));
   }
+  updateVolumeRows();
 }
 
-function setActiveAudio(key) {
-  activeAudioKey = key;
+function createVolumeRow(key) {
+  const root = document.createElement("div");
+  root.className = "volume-row";
+  root.dataset.key = key;
+
+  const head = document.createElement("div");
+  head.className = "volume-row-head";
+  const name = document.createElement("span");
+  name.className = "volume-row-name";
+  const mute = document.createElement("button");
+  mute.type = "button";
+  mute.className = "volume-mute";
+  mute.addEventListener("click", () => setTileAudio(key, !activeAudioKeys.has(key)));
+  head.append(name, mute);
+
+  const controls = document.createElement("div");
+  controls.className = "volume-row-controls";
+  const range = document.createElement("input");
+  range.type = "range";
+  range.className = "volume-range";
+  range.min = "0";
+  range.max = "100";
+  range.step = "1";
+  const value = document.createElement("span");
+  value.className = "volume-value";
+  range.addEventListener("input", () => setTileVolume(key, range.value));
+  range.addEventListener("change", async () => {
+    setTileVolume(key, range.value);
+    await saveSettings();
+  });
+  controls.append(range, value);
+
+  const hint = document.createElement("p");
+  hint.className = "volume-hint";
+  hint.textContent = VOLUME_UNSUPPORTED_HINT;
+  hint.hidden = true;
+
+  root.append(head, controls, hint);
+  return { root, name, mute, range, value, hint };
+}
+
+function updateVolumeRow(key) {
+  const row = volumeRows.get(key);
+  const stream = getStream(key);
+  if (!row || !stream) return;
+  const meta = stream.platform === "chzzk" ? metadata.get(stream.channelId) : null;
+  row.name.textContent = meta?.name || displayName(stream);
+
+  const active = activeAudioKeys.has(key);
+  row.mute.textContent = active ? "소리 켬" : "소리";
+  row.mute.setAttribute("aria-pressed", String(active));
+  row.mute.setAttribute("aria-label", `${row.name.textContent} 소리`);
+
+  // In the extension an untouched tile keeps the player's own volume, so the
+  // row says so instead of claiming 100%, and the thumb sits at the level the
+  // frame reported so the first drag starts from there.
+  const untouched = !isWrapperHost && !tileVolumes.has(key);
+  const site = siteVolumes.get(key);
+  const volume = untouched && site !== undefined ? site : getTileVolume(key);
+  // Writing the same value back is a no-op, so an in-progress drag keeps its
+  // thumb position.
+  if (row.range.value !== String(volume)) row.range.value = String(volume);
+  row.range.setAttribute("aria-label", `${row.name.textContent} 볼륨`);
+  if (untouched) {
+    row.value.textContent = site === undefined ? "기본" : `기본 ${site}%`;
+    row.range.title = "플레이어 자체 볼륨을 그대로 둡니다. 움직이면 이 값이 적용됩니다.";
+  } else {
+    row.value.textContent = `${volume}%`;
+    row.range.removeAttribute("title");
+  }
+
+  const capability = volumeCapabilities.get(key);
+  const unsupported = capability?.supported === false;
+  row.range.disabled = unsupported;
+  row.hint.hidden = !unsupported;
+}
+
+function updateVolumeRows() {
+  for (const key of volumeRows.keys()) updateVolumeRow(key);
+}
+
+function renderVolumePanel() {
+  streams.forEach((stream, index) => {
+    const key = streamKey(stream);
+    let row = volumeRows.get(key);
+    if (!row) {
+      row = createVolumeRow(key);
+      volumeRows.set(key, row);
+    }
+    // Only move a row that is actually out of place; re-inserting a node would
+    // cancel a slider drag.
+    if (volumeRowList.children[index] !== row.root) {
+      volumeRowList.insertBefore(row.root, volumeRowList.children[index] || null);
+    }
+    updateVolumeRow(key);
+  });
+
+  for (const [key, row] of volumeRows) {
+    if (getStream(key)) continue;
+    row.root.remove();
+    volumeRows.delete(key);
+  }
+  volumeEmpty.hidden = streams.length > 0;
+}
+
+function setVolumePanelOpen(open) {
+  body.classList.toggle("volume-panel-open", open);
+  volumeToggle.setAttribute("aria-pressed", String(open));
+  volumeToggle.setAttribute("aria-expanded", String(open));
+  if (open) renderVolumePanel();
+}
+
+// The frame's own level, 0..1, reported while no panel value applies.
+function setSiteVolume(key, volume) {
+  if (typeof volume !== "number" || !Number.isFinite(volume)) return;
+  siteVolumes.set(key, clampVolume(volume * 100));
+  updateVolumeRow(key);
+}
+
+function setVolumeCapability(key, data) {
+  volumeCapabilities.set(key, {
+    supported: data.supported !== false,
+    mode: typeof data.mode === "string" ? data.mode : "none",
+  });
+  updateVolumeRow(key);
+}
+
+async function setAllVolumes(volume) {
+  for (const stream of streams) setTileVolume(streamKey(stream), volume);
+  await saveSettings();
+}
+
+function setTileAudio(key, enabled) {
+  const stream = getStream(key);
+  const tile = tiles.get(key);
+  if (!stream || !tile) return;
+  if (enabled) activeAudioKeys.add(key);
+  else activeAudioKeys.delete(key);
+  applyAudioState(tile, stream);
+  updateAudioClasses();
+}
+
+function muteAll() {
+  activeAudioKeys.clear();
   for (const stream of streams) {
     const tile = tiles.get(streamKey(stream));
     if (tile) applyAudioState(tile, stream);
@@ -482,10 +787,18 @@ function setActiveAudio(key) {
 
 function setChatVisibility(open) {
   settings.chatOpen = open;
+  applyChatVisibility(open);
+  saveSettings();
+}
+
+// Visibility without persistence. Compact mode hides the chat overlay when it
+// takes over and restores the stored preference when it hands back, so a
+// folded phone never starts with the chat covering the grid.
+function applyChatVisibility(open) {
   body.classList.toggle("chat-hidden", !open);
   chatToggle.setAttribute("aria-pressed", String(open));
+  if (open) setOverflowOpen(false);
   updateLayout();
-  saveSettings();
 }
 
 function closeChatContent() {
@@ -537,12 +850,20 @@ function updateLayout() {
     const span = layout.spans[index] || 1;
     tile.style.gridColumn = span > 1 ? `span ${span}` : "";
   });
+  // The fullscreen overlay bar (wrappers only) covers the first grid row, so
+  // only those tiles move their header down. Measured after the grid styles
+  // apply so it holds for mosaic rows and fixed column counts alike.
+  const overlayActive = isWrapperHost && body.classList.contains("fullscreen-view");
+  const gridTop = grid.getBoundingClientRect().top;
+  for (const tile of tiles.values()) {
+    tile.classList.toggle("is-top-row", overlayActive && tile.getBoundingClientRect().top - gridTop < 1);
+  }
 }
 
 async function refreshStatuses() {
   const channelIds = new Set(chzzkPresets.map((member) => member.channelId));
   for (const stream of streams) {
-    if (stream.platform === "chzzk") channelIds.add(stream.channelId);
+    if (stream.platform === "chzzk" && stream.channelId) channelIds.add(stream.channelId);
   }
 
   const succeeded = new Set();
@@ -559,6 +880,7 @@ async function refreshStatuses() {
     const tile = tiles.get(streamKey(stream));
     if (tile) updateTileText(tile, stream);
   }
+  updateVolumeRows();
   return hasCompleteStatusSnapshot;
 }
 
@@ -575,7 +897,7 @@ async function resolveStream(input) {
   stream = safeStream(stream);
   if (!stream) throw new Error("방송 주소를 안전하게 해석하지 못했습니다.");
   if (stream.platform === "youtube") await prepareYoutubeIdentity();
-  if (stream.platform === "chzzk" && !stream.name) {
+  if (stream.platform === "chzzk" && stream.channelId && !stream.name) {
     const response = await chrome.runtime.sendMessage({ type: "fetch-chzzk-meta", channelId: stream.channelId });
     if (response?.ok && response.meta) {
       metadata.set(stream.channelId, response.meta);
@@ -596,21 +918,25 @@ addForm.addEventListener("submit", async (event) => {
     await setStreams([...streams, stream]);
     addInput.value = "";
     setFormMessage(`${displayName(stream)}을 추가했습니다.`, true);
+    closeCompactPanels();
   } catch (error) {
     setFormMessage(error?.message || "방송을 추가하지 못했습니다.");
   }
 });
 
-document.querySelector("#sidebar-toggle").addEventListener("click", (event) => {
-  const hidden = body.classList.toggle("sidebar-hidden");
-  event.currentTarget.setAttribute("aria-expanded", String(!hidden));
+const sidebarToggle = document.querySelector("#sidebar-toggle");
+
+function setSidebarOpen(open) {
+  body.classList.toggle("sidebar-hidden", !open);
+  sidebarToggle.setAttribute("aria-expanded", String(open));
   updateLayout();
+}
+
+sidebarToggle.addEventListener("click", () => {
+  setSidebarOpen(body.classList.contains("sidebar-hidden"));
 });
 
-document.querySelector("#empty-open-sidebar").addEventListener("click", () => {
-  body.classList.remove("sidebar-hidden");
-  document.querySelector("#sidebar-toggle").setAttribute("aria-expanded", "true");
-});
+document.querySelector("#empty-open-sidebar").addEventListener("click", () => setSidebarOpen(true));
 
 document.querySelector("#refresh-status").addEventListener("click", refreshStatuses);
 
@@ -626,11 +952,23 @@ document.querySelector("#viewer-select-live").addEventListener("click", async ()
     .filter((member) => metadata.get(member.channelId)?.open)
     .map((member) => makeChzzkStream(member.channelId, member.name));
   await setStreams([...liveMembers, ...custom]);
+  closeCompactPanels();
 });
 
 document.querySelector("#viewer-clear").addEventListener("click", () => setStreams([]));
-document.querySelector("#mute-all").addEventListener("click", () => setActiveAudio(null));
-chatToggle.addEventListener("click", () => setChatVisibility(!settings.chatOpen));
+document.querySelector("#mute-all").addEventListener("click", muteAll);
+volumeToggle.addEventListener("click", () => {
+  setVolumePanelOpen(!body.classList.contains("volume-panel-open"));
+});
+document.querySelector("#volume-panel-close").addEventListener("click", () => setVolumePanelOpen(false));
+document.querySelector("#volume-mute-all").addEventListener("click", muteAll);
+document.querySelector("#volume-max-all").addEventListener("click", () => setAllVolumes(100));
+window.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (body.classList.contains("volume-panel-open")) setVolumePanelOpen(false);
+  setOverflowOpen(false);
+});
+chatToggle.addEventListener("click", () => setChatVisibility(body.classList.contains("chat-hidden")));
 document.querySelector("#chat-close").addEventListener("click", () => setChatVisibility(false));
 
 qualitySelect.addEventListener("change", async () => {
@@ -675,7 +1013,14 @@ document.addEventListener("fullscreenchange", () => {
   fullscreenButton.setAttribute("aria-label", active ? "전체 화면 종료" : "전체 화면");
   fullscreenButton.title = active ? "Esc로 전체 화면 종료" : "전체 화면";
   clearFullscreenControlsTimer();
+  fullscreenPointerHeld = false;
   if (active) {
+    // The #fullscreen button keeps focus after the click. The extension hides
+    // the bar, so Space/Enter would exit again; on the wrappers a focused bar
+    // control would keep the overlay pinned.
+    if (document.activeElement?.closest?.(".topbar")) document.activeElement.blur();
+    // The extension hides the panel in fullscreen, as it hides the bar.
+    if (!isWrapperHost) setVolumePanelOpen(false);
     setFullscreenControlsHidden(false, true);
     noteFullscreenActivity();
   } else {
@@ -684,14 +1029,22 @@ document.addEventListener("fullscreenchange", () => {
   requestAnimationFrame(updateLayout);
 });
 
-window.addEventListener("pointermove", noteFullscreenActivity, {
+window.addEventListener("pointermove", notePointerActivity, {
   capture: true,
   passive: true,
 });
-window.addEventListener("pointerdown", noteFullscreenActivity, {
+window.addEventListener("pointerdown", notePointerActivity, {
   capture: true,
   passive: true,
 });
+window.addEventListener("pointerdown", (event) => {
+  fullscreenPointerHeld = Boolean(event.target?.closest?.(".topbar, .volume-panel, .sv-overflow"));
+}, { capture: true, passive: true });
+window.addEventListener("blur", () => { fullscreenPointerHeld = false; });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) fullscreenPointerHeld = false;
+});
+window.addEventListener("contextmenu", () => { fullscreenPointerHeld = false; }, true);
 window.addEventListener("keydown", noteFullscreenActivity, true);
 window.addEventListener("focusin", noteFullscreenActivity, true);
 
@@ -699,6 +1052,7 @@ window.addEventListener("focusin", noteFullscreenActivity, true);
 // (a real drag ends through the handle's dragend instead).
 for (const type of ["pointerup", "pointercancel"]) {
   window.addEventListener(type, () => {
+    fullscreenPointerHeld = false;
     if (!draggingKey) body.classList.remove("is-reordering");
   }, true);
 }
@@ -714,7 +1068,25 @@ window.addEventListener("message", (event) => {
     event.data?.source === "stellaview-frame" &&
     event.data.type === "viewer-activity"
   ) {
+    // Only a relayed pointer event means the pointer is inside that frame and
+    // this document's :hover is stale. A keydown or a focusin in a background
+    // player says nothing about where the pointer rests, so it must not
+    // discard a :hover the user is holding on the bar.
+    if (event.data.kind === "pointermove" || event.data.kind === "pointerdown") {
+      fullscreenActivityFromFrame = true;
+    }
     noteFullscreenActivity();
+    return;
+  }
+
+  // Volume capability and the untouched level are the only reports a YouTube
+  // frame may send. They arrive from the frame script under its own source
+  // tag; the sender window and origin were already matched to this tile above.
+  if (event.data?.type === "volume-capability" || event.data?.type === "volume-state") {
+    const expected = stream.platform === "chzzk" ? "stellaview" : "stellaview-youtube";
+    if (event.data.source !== expected) return;
+    if (event.data.type === "volume-capability") setVolumeCapability(key, event.data);
+    else setSiteVolume(key, event.data.volume);
     return;
   }
 
@@ -735,6 +1107,123 @@ window.addEventListener("message", (event) => {
 });
 
 new ResizeObserver(updateLayout).observe(grid);
+// The wrapper adapter signals its CSS fullscreen transitions (enter app
+// fullscreen, enter or switch a tile fullscreen, exit) through a synthetic
+// resize: the grid box is identical across those states, so the observer
+// above never fires and the top-row marking would stay on the old tile. A
+// tile raised to fixed inset:0 has the same rect top as the fixed grid, so
+// recomputing here moves is-top-row onto it and leaving fullscreen clears it.
+window.addEventListener("resize", updateLayout, { passive: true });
+
+// ------------------------------------------------------------- compact UI ---
+// Narrow viewports (a folded phone, a cover screen) get a touch layout: the
+// sidebar and the chat become overlays and the secondary top-bar controls move
+// into a 더보기 popover. The wrappers switch on width alone, as they always
+// did; the extension also requires (hover: none) so a narrow desktop window
+// keeps the original layout. body.sv-compact is what viewer.css keys every
+// compact rule on, so this query is the only switch. Folding and unfolding
+// change the width live, so the switch listens for changes.
+const COMPACT_MEDIA_QUERY = isWrapperHost ? "(max-width: 720px)" : "(max-width: 720px) and (hover: none)";
+const compactMedia = window.matchMedia(COMPACT_MEDIA_QUERY);
+// Controls that live in the top bar when wide and in the popover when compact.
+const overflowControls = [
+  qualitySelect.closest(".compact-field"),
+  layoutSelect.closest(".compact-field"),
+  document.querySelector("#mute-all"),
+  chatToggle,
+].filter(Boolean);
+// control -> the comment node holding its place in the top bar.
+const overflowSlots = new Map();
+let compactActive = null;
+let wideSidebarOpen = true;
+
+const overflowToggle = document.createElement("button");
+overflowToggle.id = "sv-overflow-toggle";
+overflowToggle.className = "icon-button";
+overflowToggle.type = "button";
+overflowToggle.textContent = "⋯";
+overflowToggle.title = "더보기";
+overflowToggle.setAttribute("aria-label", "더보기");
+overflowToggle.setAttribute("aria-expanded", "false");
+overflowToggle.setAttribute("aria-controls", "sv-overflow");
+fullscreenButton.before(overflowToggle);
+
+const overflowPanel = document.createElement("div");
+overflowPanel.id = "sv-overflow";
+overflowPanel.className = "sv-overflow";
+overflowPanel.setAttribute("role", "group");
+overflowPanel.setAttribute("aria-label", "더보기");
+document.querySelector(".topbar").after(overflowPanel);
+
+// One backdrop for every compact overlay: tapping it dismisses whatever is on
+// top of the grid. It is transparent when only the popover is open.
+const compactScrim = document.createElement("div");
+compactScrim.id = "sv-scrim";
+compactScrim.className = "sv-scrim";
+body.append(compactScrim);
+
+function isCompact() {
+  return compactMedia.matches;
+}
+
+function setOverflowOpen(open) {
+  const next = Boolean(open) && body.classList.contains("sv-compact");
+  body.classList.toggle("sv-overflow-open", next);
+  overflowToggle.setAttribute("aria-expanded", String(next));
+}
+
+/** Closes whatever the compact layout stacks over the grid. */
+function closeCompactPanels() {
+  if (!body.classList.contains("sv-compact")) return;
+  setOverflowOpen(false);
+  setSidebarOpen(false);
+}
+
+function moveOverflowControls(intoPopover) {
+  for (const control of overflowControls) {
+    let slot = overflowSlots.get(control);
+    if (!slot) {
+      slot = document.createComment("sv-overflow-slot");
+      overflowSlots.set(control, slot);
+    }
+    if (intoPopover) {
+      if (!slot.isConnected) control.before(slot);
+      overflowPanel.append(control);
+    } else if (slot.isConnected) {
+      slot.replaceWith(control);
+    }
+  }
+}
+
+function applyCompactMode(compact) {
+  if (compactActive === compact) return;
+  compactActive = compact;
+  body.classList.toggle("sv-compact", compact);
+  setOverflowOpen(false);
+  moveOverflowControls(compact);
+  if (compact) {
+    wideSidebarOpen = !body.classList.contains("sidebar-hidden");
+    setSidebarOpen(false);
+    applyChatVisibility(false);
+  } else {
+    setSidebarOpen(wideSidebarOpen);
+    applyChatVisibility(settings.chatOpen);
+  }
+  updateLayout();
+}
+
+overflowToggle.addEventListener("click", () => {
+  setOverflowOpen(!body.classList.contains("sv-overflow-open"));
+});
+
+compactScrim.addEventListener("click", () => {
+  setOverflowOpen(false);
+  setSidebarOpen(false);
+  if (!body.classList.contains("chat-hidden")) setChatVisibility(false);
+});
+
+compactMedia.addEventListener("change", (event) => applyCompactMode(event.matches));
+applyCompactMode(compactMedia.matches);
 
 async function initialize() {
   const stored = await chrome.storage.local.get({
@@ -742,6 +1231,9 @@ async function initialize() {
     settings: DEFAULT_SETTINGS,
   });
   settings = { ...DEFAULT_SETTINGS, ...(stored.settings || {}) };
+  settings.volumes = sanitizeVolumes(settings.volumes);
+  tileVolumes.clear();
+  for (const [key, volume] of Object.entries(settings.volumes)) tileVolumes.set(key, volume);
   streams = uniqueStreams(stored.selectedStreams || []);
 
   if (streams.some((stream) => stream.platform === "youtube")) {
@@ -756,8 +1248,8 @@ async function initialize() {
   qualitySelect.value = settings.quality;
   gridBypassInput.checked = settings.gridBypass;
   rememberSessionInput.checked = settings.rememberSession;
-  body.classList.toggle("chat-hidden", !settings.chatOpen);
-  chatToggle.setAttribute("aria-pressed", String(settings.chatOpen));
+  applyChatVisibility(settings.chatOpen && !isCompact());
+  setVolumePanelOpen(false);
 
   renderMemberLibrary();
   reconcileTiles();

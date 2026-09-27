@@ -170,7 +170,7 @@ async function resolveStream(input) {
   stream = safeStream(stream);
   if (!stream) throw new Error("방송 주소를 안전하게 해석하지 못했습니다.");
 
-  if (stream.platform === "chzzk" && !stream.name) {
+  if (stream.platform === "chzzk" && stream.channelId && !stream.name) {
     const response = await chrome.runtime.sendMessage({
       type: "fetch-chzzk-meta",
       channelId: stream.channelId,

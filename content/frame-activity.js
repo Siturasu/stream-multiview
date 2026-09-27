@@ -9,8 +9,9 @@
     embedded = true;
   }
 
+  // CHZZK serves both live channels and /video/<id> replays inside tiles.
   const supportedFrame =
-    (url.hostname === "chzzk.naver.com" && /^\/live\//.test(url.pathname)) ||
+    (url.hostname === "chzzk.naver.com" && /^\/(?:live|video)\//.test(url.pathname)) ||
     (url.hostname === "www.youtube.com" && /^\/embed\//.test(url.pathname));
   if (!embedded || !supportedFrame || url.searchParams.get("sv") !== "1") {
     return;
@@ -41,7 +42,9 @@
     if (event.type === "pointermove" && now - lastPointerReport < 80) return;
     if (event.type === "pointermove") lastPointerReport = now;
     window.parent.postMessage(
-      { source: "stellaview-frame", type: "viewer-activity" },
+      // kind lets the viewer tell a pointer that moved into this frame from a
+      // key press or a focus change, which say nothing about pointer position.
+      { source: "stellaview-frame", type: "viewer-activity", kind: event.type },
       viewerOrigin,
     );
   }

@@ -1,0 +1,124 @@
+/* iPad WKWebView 래퍼 전용 보정. viewer.css 뒤에 붙는다. */
+html,
+body {
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+input,
+textarea,
+select {
+  -webkit-user-select: text;
+}
+
+/* 터치 기기용 타일 컨트롤 상시 표시 규칙은 viewer.css로 옮겼다. */
+
+/* iPad wrapper fullscreen. WKWebView already occupies the app screen, so the
+   adapter expands the existing DOM/tile instead of starting WebKit element
+   fullscreen. No iframe is removed, recreated, or assigned a new src. */
+body.fullscreen-view .sv-ios-fullscreen-exit {
+  display: block;
+  position: fixed;
+  z-index: 2147483647;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.44);
+  border-radius: 9px;
+  color: #fff;
+  background: rgba(10, 12, 18, 0.9);
+  font-size: 13px;
+  font-weight: 800;
+  -webkit-tap-highlight-color: transparent;
+  transition: opacity 160ms ease;
+}
+
+/* viewer.css already keeps this bar as an auto-hiding overlay in every
+   fullscreen. The CSS adapter never enters html:fullscreen, so this block only
+   forces display:flex, pads the right edge for the dedicated exit button and
+   raises the bar to the maximum z-index. */
+body.fullscreen-view.sv-ios-app-fullscreen .topbar,
+body.fullscreen-view.sv-ios-tile-fullscreen .topbar {
+  display: flex !important;
+  position: fixed;
+  z-index: 2147483647;
+  top: 0;
+  right: 0;
+  left: 0;
+  padding-right: calc(150px + env(safe-area-inset-right));
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-100%);
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+body.fullscreen-view:not(.fullscreen-controls-hidden).sv-ios-app-fullscreen .topbar,
+body.fullscreen-view:not(.fullscreen-controls-hidden).sv-ios-tile-fullscreen .topbar {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
+
+/* The adapter supplies its own exit button, so the toolbar one is redundant.
+   Only where the adapter runs: other wrappers keep the toolbar control. */
+body.fullscreen-view.sv-ios-app-fullscreen .topbar #fullscreen,
+body.fullscreen-view.sv-ios-tile-fullscreen .topbar #fullscreen {
+  display: none;
+}
+
+body.fullscreen-view.fullscreen-controls-hidden .sv-ios-fullscreen-exit {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sv-ios-fullscreen-wake {
+  display: none;
+}
+
+body.fullscreen-view.fullscreen-controls-hidden .sv-ios-fullscreen-wake {
+  display: block;
+  position: fixed;
+  z-index: 2147483647;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body.sv-ios-tile-fullscreen .stream-tile.sv-ios-fullscreen-tile {
+  position: fixed;
+  z-index: 2147483646;
+  inset: 0;
+  width: 100vw;
+  width: 100dvw;
+  height: 100vh;
+  height: 100dvh;
+  margin: 0;
+}
+
+/* Compact layout (iPad Slide Over, a folded phone in the Android wrapper).
+   The wrapper draws edge to edge, so the overlays created by viewer.js keep
+   themselves inside the safe area. */
+@media (max-width: 720px) {
+  .sv-overflow {
+    right: max(8px, env(safe-area-inset-right));
+    left: max(8px, env(safe-area-inset-left));
+  }
+
+  .sidebar,
+  .chat-panel {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}

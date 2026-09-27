@@ -1,4 +1,5 @@
 const CHZZK_CHANNEL_ID_PATTERN = /^[0-9a-f]{32}$/i;
+const CHZZK_VIDEO_ID_PATTERN = /^[1-9][0-9]{0,15}$/;
 const YOUTUBE_VIDEO_ID_PATTERN = /^[A-Za-z0-9_-]{11}$/;
 const YOUTUBE_CHANNEL_ID_PATTERN = /^UC[A-Za-z0-9_-]{22}$/;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
@@ -9,7 +10,7 @@ const EMBED_DOMAIN_PATTERN = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0
 const CHROME_EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
 const EXTENSION_ORIGIN_PATTERN = /^chrome-extension:\/\/[a-p]{32}$/;
 
-const CHZZK_HOSTS = new Set(["chzzk.naver.com", "www.chzzk.naver.com"]);
+const CHZZK_HOSTS = new Set(["chzzk.naver.com", "www.chzzk.naver.com", "m.chzzk.naver.com"]);
 const YOUTUBE_HOSTS = new Set([
   "youtube.com",
   "www.youtube.com",
@@ -155,6 +156,10 @@ function parseChzzkUrl(url) {
     return null;
   }
 
+  if (segments.length === 2 && segments[0].toLowerCase() === "video") {
+    return makeChzzkVideo(segments[1]);
+  }
+
   let channelId = null;
   if (segments.length === 1 && CHZZK_CHANNEL_ID_PATTERN.test(segments[0])) {
     [channelId] = segments;
@@ -233,6 +238,12 @@ export function makeChzzkStream(channelId, name) {
   );
 }
 
+/** CHZZK recordings have numeric video ids, distinct from live channel ids. */
+export function makeChzzkVideo(videoId, name) {
+  if (typeof videoId !== "string" || !CHZZK_VIDEO_ID_PATTERN.test(videoId.trim())) return null;
+  return withName({ platform: "chzzk", videoId: videoId.trim() }, name);
+}
+
 /**
  * Build a normalized YouTube video or UC channel stream.
  */
@@ -295,6 +306,10 @@ export function sanitizeStream(stream) {
     typeof stream.platform === "string" ? stream.platform.toLowerCase() : "";
 
   if (platform === "chzzk") {
+    if (stream.videoId !== undefined) {
+      if (stream.channelId !== undefined) return null;
+      return makeChzzkVideo(stream.videoId, stream.name);
+    }
     return makeChzzkStream(stream.channelId, stream.name);
   }
 
@@ -338,7 +353,7 @@ export function streamKey(stream) {
   }
 
   if (safeStream.platform === "chzzk") {
-    return `chzzk:${safeStream.channelId}`;
+    return safeStream.videoId ? `chzzk:video:${safeStream.videoId}` : `chzzk:${safeStream.channelId}`;
   }
   if (safeStream.needsResolution) {
     return `youtube:resolve:${safeStream.sourceUrl}`;
@@ -404,7 +419,9 @@ export function streamToPlayerUrl(stream, options = {}) {
 
   if (safeStream.platform === "chzzk") {
     const url = new URL(
-      `https://chzzk.naver.com/live/${safeStream.channelId}`,
+      safeStream.videoId
+        ? `https://chzzk.naver.com/video/${safeStream.videoId}`
+        : `https://chzzk.naver.com/live/${safeStream.channelId}`,
     );
     url.searchParams.set("sv", "1");
     url.searchParams.set("quality", playerQuality(options?.quality));
@@ -436,6 +453,7 @@ export function streamToChatUrl(stream, options = {}) {
   }
 
   if (safeStream.platform === "chzzk") {
+    if (safeStream.videoId) return null;
     return `https://chzzk.naver.com/live/${safeStream.channelId}/chat`;
   }
   if (!safeStream.videoId) {
@@ -457,7 +475,9 @@ export function streamToOriginalUrl(stream) {
   }
 
   if (safeStream.platform === "chzzk") {
-    return `https://chzzk.naver.com/live/${safeStream.channelId}`;
+    return safeStream.videoId
+      ? `https://chzzk.naver.com/video/${safeStream.videoId}`
+      : `https://chzzk.naver.com/live/${safeStream.channelId}`;
   }
   if (safeStream.needsResolution) {
     return safeStream.sourceUrl;

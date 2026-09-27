@@ -1,0 +1,10 @@
+build/
+.gradle/
+local.properties
+keystore/
+*.apk
+*.aab
+.idea/
+*.iml
+.kotlin/
+harness/node_modules/
