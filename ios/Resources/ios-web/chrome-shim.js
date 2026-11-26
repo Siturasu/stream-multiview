@@ -4,7 +4,7 @@
 // chrome.runtime.id and chrome.tabs.create. Storage and network go through
 // window.webkit.messageHandlers.stellaViewNative (NativeBridge.swift); the
 // background worker's request logic is reused as plain module functions.
-import { fetchChzzkMeta, resolveYoutubeInput } from "../background.js";
+import { fetchChzzkMeta, fetchCimeMeta, resolveYoutubeInput } from "../background.js";
 import { youtubeClientOrigin } from "../src/shared/streams.js";
 import { installIOSFullscreenAdapter } from "./fullscreen-viewer.js";
 
@@ -13,7 +13,8 @@ import { installIOSFullscreenAdapter } from "./fullscreen-viewer.js";
 // "prepare-youtube-player" reply matters here. YouTube tiles use the real
 // page origin (location.origin) and the Referer WebKit sends for it.
 const RUNTIME_ID = "ipadipadipadipadipadipadipadipad";
-const NATIVE_FETCH_HOSTS = new Set(["api.chzzk.naver.com", "www.youtube.com"]);
+// ci.me sends no Access-Control-Allow-Origin, so its API is relayed natively too.
+const NATIVE_FETCH_HOSTS = new Set(["api.chzzk.naver.com", "www.youtube.com", "ci.me"]);
 
 // Two transports share one protocol. iOS: WKScriptMessageHandlerWithReply
 // (postMessage returns a promise). Android: a WebMessageListener object whose
@@ -171,8 +172,13 @@ const runtime = {
           return { ok: true, stream: await resolveYoutubeInput(message.input) };
         case "fetch-chzzk-meta":
           return { ok: true, meta: await fetchChzzkMeta(message.channelId) };
+        case "fetch-cime-meta":
+          return { ok: true, meta: await fetchCimeMeta(message.slug) };
         case "prepare-youtube-player":
           return { ok: true, origin: youtubeClientOrigin(RUNTIME_ID), ruleId: 0 };
+        case "prepare-cime-frames":
+          // No declarativeNetRequest here; CIME tiles use the direct HLS player.
+          return { ok: true, ruleId: 0 };
         case "open-viewer":
           return { ok: true, tabId: 0, reused: true };
         default:

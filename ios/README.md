@@ -21,6 +21,11 @@ SideStore 또는 Xcode로 본인 아이패드에 설치해 쓴다.
 웹 자산(`viewer.*`, `background.js`, `src/`, `content/`)은 레포 루트를 직접 참조한다.
 확장 쪽 파일을 고치면 앱에도 그대로 들어간다.
 
+버전은 0.1.6(7)이다. 씨미(ci.me) 타일은 사이트가 프레임 표시를 막아(X-Frame-Options, frame-ancestors) 페이지를 넣지 않고,
+`src/shared/cime-player.js`가 만든 srcdoc 문서가 방송 주소(IVS HLS)를 직접 재생한다. 씨미 API는 CORS가 없어 `chrome-shim.js`가
+네이티브 fetch(`ci.me`)로 중계한다. 프레임은 치지직과 같은 postMessage 규약으로 소리, 볼륨, 상태를 주고받고,
+오른쪽 아래 전체화면 버튼(44px)이 있다. 볼륨은 세터를 쓴 뒤 읽은 값으로 지원 여부를 판정한다. 씨미 채팅은 앱에서 못 열고 원본 버튼으로 연다.
+
 ## 왜 이렇게 만들었나
 
 - 뷰어 문서를 `loadHTMLString(_:baseURL: https://chzzk.naver.com/)`로 올린다. 실기기에서 네이버
@@ -86,6 +91,15 @@ Settings → User Customizations → Reset adi.pb에서 Keep Headers를 해제�
 - 갱신 실패의 흔한 원인: VPN이 LocalDevVPN이 아님, Wi-Fi 또는 VPN 끊김, 페어링 파일 만료
   (iloader에서 다시 배치), DNS 차단 앱. iPadOS 26.4 이상에서 AFC 오류(minimuxer 27)가
   나면 문서가 SideStore nightly를 권한다.
+
+만료 복구(둘 다 7일을 넘겨 SideStore까지 만료된 경우, 2026-10-09 확인):
+
+```
+ios/harness/iloader-resign.sh          # iPad USB 연결 후. iloader 저장 로그인으로 SideStore Nightly 재설치, 15초
+```
+
+그 다음 iPad에서 LocalDevVPN 연결 → SideStore 열기 → 자기 자신 갱신 → My Apps의 Stream Multiview 갱신.
+앱은 지워지지 않으므로 ipa를 다시 넣을 필요는 없다. 7일 갱신 자체를 없애려면 유료 개발자 프로그램(1년 서명)뿐이다.
 
 ## 설치 B: Xcode에서 직접 실행 (Team ID 필요)
 
@@ -162,6 +176,8 @@ macOS(이 맥의 WebKit, Xcode 불필요):
 ios/harness/run.sh                      # 첫 LIVE 멤버 + 기본 유튜브 VOD
 ios/harness/run.sh --channel <채널ID>   # 특정 치지직 채널
 ios/harness/run.sh --youtube <영상ID>   # 특정 유튜브 영상, none이면 생략
+ios/harness/run.sh --cime <slug>        # 씨미 채널(기본 hebi), none이면 생략. 라이브 slug면 재생과 볼륨 검사, 오프라인이면 inconclusive
+npm run check:cime                      # 씨미 주소, 멤버, 매니페스트, 플레이어 소스 검증(네트워크 없음)
 ios/harness/run.sh --keep               # 끝나도 창을 닫지 않음
 ios/harness/run.sh --keep-data ...      # 하네스의 WebKit 프로필(쿠키)을 지우지 않음
 ios/harness/run.sh --timeout 60         # 본 방송/음소거 해제 각 단계에서 최대 60초 대기
@@ -189,7 +205,7 @@ SIMCTL_CHILD_SV_TIMEOUT=30 xcrun simctl launch "$UDID" dev.siturasu.stream-multi
 cat "$(xcrun simctl get_app_container "$UDID" dev.siturasu.stream-multiview data)/Documents/sv-harness-report.json"
 ```
 
-환경변수 `SV_YOUTUBE`(영상ID 또는 none), `SV_CHANNEL`, `SV_VIDEOS`(쉼표 구분 다시보기 ID),
+환경변수 `SV_YOUTUBE`(영상ID 또는 none), `SV_CIME`(slug 또는 none), `SV_CHANNEL`, `SV_VIDEOS`(쉼표 구분 다시보기 ID),
 `SV_TIMEOUT`은 `SIMCTL_CHILD_` 접두어로
 넘긴다. 실기기에서는 Xcode 스킴의 Arguments Passed On Launch에 `-svHarness`를 넣고 실행한
 뒤 Devices 창에서 앱 컨테이너를 내려받아 같은 파일을 읽는다.
@@ -215,6 +231,7 @@ iframe 유지와 제어 query 유실 후 재생을 확인한다. 새 최상위 �
 - 실제 치지직 로그인 연결과 인증 방송·멤버십 재생.
 - 4타일 1080p60 동시 디코딩의 발열과 배터리. 버벅이면 화질 선택을 720p로 내린다.
 - 구글 로그인이 임베디드 웹뷰를 거부하는지 여부.
+- 씨미 타일: iPadOS WebKit이 `video.volume` 세터를 반영하는지(무시하면 슬라이더가 비활성화되고 힌트가 보여야 함), srcdoc 전체화면 버튼과 타일 확대, 여러 타일 동시 재생의 발열.
 
 ## 프로젝트 재생성
 

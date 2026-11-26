@@ -28,7 +28,8 @@ struct ViewerScreen: View {
 /// shared ViewerScenario on iPadOS WebKit and writes the JSON report to
 /// Documents/sv-harness-report.json (read it with `xcrun simctl
 /// get_app_container booted <bundle id> data`). Options come from the
-/// environment: SV_YOUTUBE (video id or "none"), SV_CHANNEL, SV_TIMEOUT.
+/// environment: SV_YOUTUBE (video id or "none"), SV_CIME (channel slug or
+/// "none"), SV_CHANNEL, SV_TIMEOUT.
 enum HarnessMode {
     static var isEnabled: Bool {
         let process = ProcessInfo.processInfo
@@ -39,6 +40,7 @@ enum HarnessMode {
         let environment = ProcessInfo.processInfo.environment
         var options = ScenarioOptions()
         if let youtube = environment["SV_YOUTUBE"] { options.youtube = youtube == "none" ? nil : youtube }
+        if let cime = environment["SV_CIME"] { options.cime = cime == "none" ? nil : cime }
         if let channel = environment["SV_CHANNEL"], !channel.isEmpty { options.channel = channel }
         if let videos = environment["SV_VIDEOS"] { options.chzzkVideos = videos.split(separator: ",").map(String.init) }
         if let timeout = environment["SV_TIMEOUT"].flatMap(Double.init) { options.timeout = timeout }

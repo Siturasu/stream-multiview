@@ -1,16 +1,17 @@
 {
   "name": "stream-multiview",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "type": "module",
   "description": "Personal video multiview extension",
   "scripts": {
-    "check": "node --check background.js && node --check popup.js && node --check viewer.js && node --check content/chzzk-main.js && node --check content/frame-activity.js && node --check src/shared/layout.js && node --check src/shared/members.js && node --check src/shared/streams.js && node --check ios/Resources/ios-web/chrome-shim.js && node --check ios/Resources/ios-web/fullscreen-frame.js && node --check ios/Resources/ios-web/fullscreen-viewer.js && node --check content/youtube-volume-frame.js && node --check ios/Resources/ios-web/session-access-frame.js && node --check chzzk-direct-hls.user.js",
+    "check": "node --check background.js && node --check popup.js && node --check viewer.js && node --check content/chzzk-main.js && node --check content/frame-activity.js && node --check src/shared/layout.js && node --check src/shared/members.js && node --check src/shared/streams.js && node --check src/shared/cime-player.js && node --check content/cime-embed.js && node --check ios/Resources/ios-web/chrome-shim.js && node --check ios/Resources/ios-web/fullscreen-frame.js && node --check ios/Resources/ios-web/fullscreen-viewer.js && node --check content/youtube-volume-frame.js && node --check ios/Resources/ios-web/session-access-frame.js && node --check chzzk-direct-hls.user.js",
     "check:ios-fullscreen": "node ios/harness/check-fullscreen-adapter.mjs",
     "check:chzzk-vod": "node ios/harness/check-chzzk-vod.mjs",
     "check:volume-panel": "node ios/harness/check-volume-panel.mjs",
     "check:ios-session": "node ios/harness/check-session-access.mjs",
     "check:volume-frame": "node ios/harness/check-volume-frame.mjs",
+    "check:cime": "node ios/harness/check-cime.mjs",
     "check:chrome": "node harness/chrome/check-extension.mjs"
   }
 }

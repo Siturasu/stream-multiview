@@ -1,3 +1,5 @@
+import { makeChzzkStream, makeCimeStream, makeYouTubeStream } from "./streams.js";
+
 /**
  * Official active StelLive roster.
  *
@@ -75,6 +77,34 @@ export const STELLIVE_MEMBERS = [
     group: "CLICHÉ",
     accent: "#84CC16",
   },
+  {
+    id: "hiyori",
+    name: "하나요 히요리",
+    channelId: "49d2c3cf8f0b2843d934ec15e82bb54c",
+    group: "ABYSS",
+    accent: "#E879F9",
+  },
+  {
+    id: "meri",
+    name: "토키노 메리",
+    channelId: "792acf9ca28b42918710327e14b06b68",
+    group: "ABYSS",
+    accent: "#14B8A6",
+  },
+  {
+    id: "rang",
+    name: "코가네 랑",
+    channelId: "c657aa3592260a2b59669a72ec151936",
+    group: "ABYSS",
+    accent: "#EAB308",
+  },
+  {
+    id: "toa",
+    name: "시즈키 토아",
+    channelId: "2299fad4bebb504b0978e1ec08b2f7d3",
+    group: "ABYSS",
+    accent: "#6366F1",
+  },
 ];
 
 /**
@@ -98,11 +128,27 @@ export const FEATURED_CHANNELS = [
     group: "함께 보기",
     accent: "#EF4444",
   },
+  {
+    // CIME (ci.me) uses the channel slug where the other platforms use an id.
+    id: "heavy-cime",
+    name: "헤비 (씨미)",
+    platform: "cime",
+    channelId: "hebi",
+    group: "함께 보기",
+    accent: "#F97316",
+  },
 ];
+
+/** Build the normalized stream for a preset of any platform. */
+export function presetStream(preset) {
+  if (preset.platform === "youtube") return makeYouTubeStream(preset.channelId, preset.name);
+  if (preset.platform === "cime") return makeCimeStream(preset.channelId, preset.name);
+  return makeChzzkStream(preset.channelId, preset.name);
+}
 
 export const STREAM_PRESETS = [
   ...STELLIVE_MEMBERS.map((member) => ({ ...member, platform: "chzzk" })),
   ...FEATURED_CHANNELS,
 ];
 
-export const PRESET_GROUP_ORDER = ["EVERYS", "UNIVERSE", "CLICHÉ", "함께 보기"];
+export const PRESET_GROUP_ORDER = ["EVERYS", "UNIVERSE", "CLICHÉ", "ABYSS", "함께 보기"];

@@ -576,6 +576,11 @@ body.is-reordering #chat-frame {
   background: #ff3b4b;
 }
 
+.platform-pill.cime {
+  color: white;
+  background: #f97316;
+}
+
 .tile-identity > div {
   min-width: 0;
 }

@@ -1,13 +1,12 @@
-import { PRESET_GROUP_ORDER, STREAM_PRESETS } from "./src/shared/members.js";
+import { PRESET_GROUP_ORDER, STREAM_PRESETS, presetStream } from "./src/shared/members.js";
 import {
-  makeChzzkStream,
-  makeYouTubeStream,
   parseStreamInput,
   sanitizeStream,
   streamKey,
 } from "./src/shared/streams.js";
 
 const chzzkPresets = STREAM_PRESETS.filter((preset) => preset.platform === "chzzk");
+const cimePresets = STREAM_PRESETS.filter((preset) => preset.platform === "cime");
 const presetKeys = new Set(STREAM_PRESETS.map((preset) => streamKey(presetStream(preset))));
 
 const memberGroups = document.querySelector("#member-groups");
@@ -39,10 +38,10 @@ function memberStream(member) {
   return presetStream(member);
 }
 
-function presetStream(preset) {
-  return preset.platform === "youtube"
-    ? makeYouTubeStream(preset.channelId, preset.name)
-    : makeChzzkStream(preset.channelId, preset.name);
+function memberMeta(member) {
+  if (member.platform === "chzzk") return metadata.get(member.channelId) || null;
+  if (member.platform === "cime") return metadata.get(`cime:${member.channelId}`) || null;
+  return null;
 }
 
 function formatViewers(value) {
@@ -83,7 +82,7 @@ function renderMembers() {
 
     for (const member of STREAM_PRESETS.filter((item) => item.group === group)) {
       const stream = memberStream(member);
-      const meta = member.platform === "chzzk" ? metadata.get(member.channelId) : null;
+      const meta = memberMeta(member);
       const button = document.createElement("button");
       button.type = "button";
       button.className = `member-card${meta?.open ? " is-live" : ""}`;
@@ -104,7 +103,7 @@ function renderMembers() {
           ? formatViewers(meta.viewers)
           : meta
             ? "오프라인"
-            : "상태 확인 중";
+            : member.platform === "cime" ? "씨미" : "상태 확인 중";
       copy.append(name, state);
 
       const check = document.createElement("span");
@@ -157,7 +156,7 @@ function setFormMessage(message, success = false) {
 
 async function resolveStream(input) {
   let stream = parseStreamInput(input);
-  if (!stream) throw new Error("지원하는 치지직 또는 YouTube 주소가 아닙니다.");
+  if (!stream) throw new Error("지원하는 치지직, 씨미 또는 YouTube 주소가 아닙니다.");
 
   if (stream.needsResolution) {
     const response = await chrome.runtime.sendMessage({ type: "resolve-youtube", input });
@@ -180,6 +179,13 @@ async function resolveStream(input) {
     }
   }
 
+  if (stream.platform === "cime" && !stream.name) {
+    const response = await chrome.runtime.sendMessage({ type: "fetch-cime-meta", slug: stream.slug });
+    if (response?.ok && response.meta?.name) {
+      stream = { ...stream, name: response.meta.name };
+    }
+  }
+
   return stream;
 }
 
@@ -197,6 +203,13 @@ async function addInput(input) {
 }
 
 async function refreshMetadata() {
+  // CIME is best effort: only the CHZZK roster decides snapshot completeness.
+  Promise.allSettled(
+    cimePresets.map(async (member) => {
+      const response = await chrome.runtime.sendMessage({ type: "fetch-cime-meta", slug: member.channelId });
+      if (response?.ok && response.meta) metadata.set(`cime:${member.channelId}`, response.meta);
+    }),
+  ).then(() => renderMembers());
   const results = await Promise.allSettled(
     chzzkPresets.map(async (member) => {
       const response = await chrome.runtime.sendMessage({
@@ -210,7 +223,7 @@ async function refreshMetadata() {
       return false;
     }),
   );
-  const openCount = [...metadata.values()].filter((meta) => meta.open).length;
+  const openCount = chzzkPresets.filter((member) => memberMeta(member)?.open).length;
   const succeeded = results.filter(
     (result) => result.status === "fulfilled" && result.value === true,
   ).length;

@@ -9,7 +9,7 @@ import WebKit
 // ViewerScenario and prints its JSON report to stdout. Exit code 0 means
 // every check passed (inconclusive checks are listed, not failed).
 //
-//   harness <webRoot> [--youtube VIDEO_ID|none] [--channel CHANNEL_ID] [--timeout SEC] [--keep] [--private none|all]
+//   harness <webRoot> [--youtube VIDEO_ID|none] [--cime SLUG|none] [--channel CHANNEL_ID] [--timeout SEC] [--keep] [--private none|all]
 
 struct Options {
     var webRoot: URL
@@ -29,7 +29,7 @@ func parseOptions() -> Options {
         return arguments.removeFirst()
     }
     guard !arguments.isEmpty else {
-        fputs("usage: harness <webRoot> [--youtube VIDEO_ID|none] [--channel CHANNEL_ID] [--timeout SEC] [--keep] [--private none|all]\n", stderr)
+        fputs("usage: harness <webRoot> [--youtube VIDEO_ID|none] [--cime SLUG|none] [--channel CHANNEL_ID] [--timeout SEC] [--keep] [--private none|all]\n", stderr)
         exit(64)
     }
     var options = Options(webRoot: URL(fileURLWithPath: arguments.removeFirst(), isDirectory: true))
@@ -39,6 +39,9 @@ func parseOptions() -> Options {
         case "--youtube":
             let value = next(flag)
             options.scenario.youtube = value == "none" ? nil : value
+        case "--cime":
+            let value = next(flag)
+            options.scenario.cime = value == "none" ? nil : value
         case "--channel":
             options.scenario.channel = next(flag)
         case "--videos":

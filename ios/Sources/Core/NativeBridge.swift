@@ -259,6 +259,7 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
                 policy: NativeFetchCookiePolicy(rootDomainByRequestHost: [
                     "api.chzzk.naver.com": "naver.com",
                     "www.youtube.com": "youtube.com",
+                    "ci.me": "ci.me",
                 ]),
                 source: NativeFetchCookieSource {
                     await SharedWebSession.dataStore.httpCookieStore.allCookies()

@@ -2,7 +2,7 @@
 # macOS 하네스: 앱 번들과 같은 배치로 웹 루트를 스테이징하고, Command Line Tools의
 # swiftc로 Core 소스 + 하네스를 빌드한 뒤 실행한다. Xcode가 없어도 된다.
 #
-#   ios/harness/run.sh [--keep-data] [--youtube VIDEO_ID|none] [--channel CHANNEL_ID] [--timeout SEC] [--keep] [--private none|all]
+#   ios/harness/run.sh [--keep-data] [--youtube VIDEO_ID|none] [--cime SLUG|none] [--channel CHANNEL_ID] [--timeout SEC] [--keep] [--private none|all]
 #
 # 기본으로 하네스 프로세스의 WebKit 프로필(쿠키, 캐시, 추적 통계)을 지우고 시작한다.
 # 실제 로그인 쿠키를 유지한 채 돌리려면 --keep-data 를 첫 인자로 준다.

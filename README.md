@@ -4,6 +4,11 @@
 
 ## 크롬 확장 기능
 
+버전 0.1.9. 지원 주소 형식은 `chzzk.naver.com/live/채널ID`, `chzzk.naver.com/video/숫자ID`, 유튜브 주소, `ci.me/@slug`.
+
+- 스텔라이브 4기 ABYSS(하나요 히요리, 토키노 메리, 코가네 랑, 시즈키 토아)가 멤버 목록에 있다.
+- 씨미(ci.me) 채널을 타일로 추가할 수 있다. 함께 보기에 헤비(씨미)가 있다. 확장에서는 ci.me 페이지를 프레임으로 넣고,
+  iPad와 안드로이드 래퍼에서는 방송 주소를 직접 재생한다(채팅은 래퍼에서 못 연다, 원본 버튼으로 연다). 성인, 로그인 전용 방송은 지원하지 않는다.
 - 전체화면에서는 원래처럼 상단 바, 사이드바, 채팅이 모두 숨는다. 전체화면에 들어가면 볼륨 패널도 닫힌다.
   타일 컨트롤은 마우스를 움직이면 나타나고 1.8초 뒤 다시 숨는다.
 - 상단 바의 "볼륨" 버튼이 타일별 볼륨 패널을 연다. 타일마다 0~100 슬라이더와 소리 켬/끔이 있고,
@@ -24,6 +29,7 @@
 npm run check              # 모든 스크립트 문법 검사
 npm run check:volume-panel # 볼륨 패널 상태와 명령, 저장
 npm run check:chzzk-vod    # 치지직 다시보기 주소와 독립 소리
+npm run check:cime         # 씨미 주소 파싱, 멤버, 매니페스트와 DNR 규칙, 플레이어 소스 단언
 npm run check:volume-frame # 프레임의 set-volume 처리와 오리진 정책
 npm run check:ios-fullscreen
 npm run check:ios-session
@@ -31,6 +37,8 @@ npm run check:chrome       # 실제 Chrome for Testing에 확장을 올려 CDP�
 ```
 
 `npm run check:chrome`의 설치 방법은 `harness/chrome/README.md`.
+
+씨미 실방송 재생은 맥 WebKit 하네스로 본다: `ios/harness/run.sh --cime <라이브 slug> --timeout 60`. 자세한 옵션은 `ios/README.md`.
 
 ## iPad
 

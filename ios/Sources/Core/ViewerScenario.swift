@@ -9,6 +9,9 @@ struct ScenarioOptions {
     /// YouTube video to add; nil skips the YouTube checks. The default is a
     /// permanent VOD so the Referer path is always testable.
     var youtube: String? = "dQw4w9WgXcQ"
+    /// CIME channel slug to add; nil skips the CIME checks. Playback checks
+    /// are inconclusive while the channel is offline.
+    var cime: String? = "hebi"
     /// CHZZK channel id to add through the form; nil picks the first LIVE
     /// member from the library.
     var channel: String?
@@ -559,6 +562,13 @@ final class ViewerScenario {
             }
         }
 
+        // 7b. CIME tile: ci.me pages refuse framing and WKWebView has no
+        //     declarativeNetRequest, so the wrapper plays the channel's IVS HLS
+        //     URL in a srcdoc player document instead.
+        if let slug = options.cime {
+            await runCimeStep(slug: slug)
+        }
+
         // 8. Login dismissal must refresh cookies without losing an unsaved
         // composition. Exercise the exact controller path used by the app.
         do {
@@ -623,6 +633,232 @@ final class ViewerScenario {
         }
         if webViewErrors.contains(where: { $0.contains("terminated") }) { fail("web content process terminated during the run") }
         return finish()
+    }
+
+    /// The wrapper's CIME tile is a srcdoc document (no src), filled from
+    /// "fetch-cime-meta" through the native fetch bridge. Playback is only
+    /// required while the channel is live; the tile is removed afterwards so
+    /// the login-refresh check below sees the same composition as before.
+    private func runCimeStep(slug: String) async {
+        let tileSelector = "[data-key=\"cime:\(slug.lowercased())\"]"
+        let tileJS = "document.querySelector(\(WebAssets.jsString(".stream-tile" + tileSelector)))"
+        // Record the capability reports of the srcdoc player (same origin as
+        // the viewer); the viewer keeps its own copy private.
+        _ = try? await query("""
+        if (!globalThis.__svCimeCapability) {
+          globalThis.__svCimeCapability = [];
+          window.addEventListener('message', event => {
+            if (event.origin !== location.origin || event.data?.source !== 'stellaview' || event.data.type !== 'volume-capability') return;
+            // The viewer origin is also the CHZZK frames' origin; keep CIME tiles only.
+            const tile = [...document.querySelectorAll('iframe.stream-frame')]
+              .find(frame => frame.contentWindow === event.source)?.closest('.stream-tile');
+            if (!tile?.dataset.key?.startsWith('cime:')) return;
+            globalThis.__svCimeCapability.push({
+              supported: event.data.supported, mode: event.data.mode,
+              load: tile.dataset.cimeLoad || '', at: Math.round(performance.now()),
+            });
+          });
+        }
+        return true;
+        """)
+        _ = try? await query("""
+        document.querySelector('#viewer-stream-input').value = \(WebAssets.jsString("https://ci.me/@\(slug)/live"));
+        document.querySelector('#viewer-add-form').requestSubmit();
+        return 'submitted';
+        """)
+        // Independent of the viewer DOM: ask the shim directly whether the
+        // channel is live (same native fetch path the viewer uses).
+        let meta = (try? await queryAsync("""
+        const response = await globalThis.chrome.runtime.sendMessage({ type: 'fetch-cime-meta', slug: \(WebAssets.jsString(slug)) });
+        if (!response?.ok) return { ok: false, error: String(response?.error || 'no response') };
+        const meta = response.meta || {};
+        return { ok: true, name: meta.name || '', open: meta.open === true, hasPlayback: !!meta.playback };
+        """)) as? [String: Any]
+        let open = meta?["open"] as? Bool == true
+        report["cimeTarget"] = ["slug": slug, "meta": meta ?? "unavailable"]
+        if meta?["ok"] as? Bool == true { pass("cime meta fetched through the native bridge (open: \(open))") }
+        else { fail("cime meta could not be fetched through the native bridge: \(meta?["error"] ?? "unavailable")") }
+
+        let tileCreated = await poll("cime tile", timeout: 20) {
+            try await self.query("return document.querySelector('.platform-pill.cime')?.closest('.stream-tile') ? 'ok' : null;")
+        }
+        guard tileCreated != nil else {
+            report["cimeTile"] = "missing"
+            fail("cime tile was not created")
+            return
+        }
+        let tileQuery = """
+        const tile = \(tileJS) || document.querySelector('.platform-pill.cime')?.closest('.stream-tile');
+        if (!tile) return null;
+        const frame = tile.querySelector('iframe.stream-frame');
+        return {
+          key: tile.dataset.key || '',
+          hasSrc: !!frame?.hasAttribute('src'),
+          srcdocLength: frame?.getAttribute('srcdoc')?.length || 0,
+          name: tile.querySelector('.tile-name')?.textContent.trim() || '',
+          subtitle: tile.querySelector('.tile-subtitle')?.textContent.trim() || '',
+          state: tile.dataset.cimeState || '',
+        };
+        """
+        let tileInfo = await poll("cime srcdoc player", timeout: 20) {
+            let info = try await self.query(tileQuery) as? [String: Any]
+            return ((info?["srcdocLength"] as? Int) ?? 0) > 0 ? info : nil
+        }
+        let snapshot = ((try? await query(tileQuery)) ?? nil) as? [String: Any]
+        report["cimeTile"] = snapshot ?? "missing"
+        if snapshot?["hasSrc"] as? Bool == true { fail("cime iframe has a src attribute (ci.me pages cannot be framed in WKWebView)") }
+        if tileInfo != nil, snapshot?["hasSrc"] as? Bool != true { pass("cime tile uses a srcdoc direct HLS player") }
+        else if tileInfo == nil { fail("cime tile never received a srcdoc player (subtitle: \(snapshot?["subtitle"] ?? ""))") }
+        let shownName = (snapshot?["name"] as? String) ?? ""
+        if !shownName.isEmpty, shownName != slug { pass("cime tile shows the channel name: \(shownName)") }
+        else if let metaName = meta?["name"] as? String, !metaName.isEmpty, metaName != slug { fail("cime tile name was not filled from metadata (shows \"\(shownName)\", meta \"\(metaName)\")") }
+        else { skip("cime channel name equals its slug; name fill not distinguishable") }
+
+        // The srcdoc player document reports its state to the viewer, which
+        // mirrors it on tile.dataset.cimeState.
+        let state = await poll("cime player state", timeout: 35) {
+            let value = try await self.query("return \(tileJS)?.dataset.cimeState || null;") as? String
+            if value == "playing" { return value }
+            if !open, value == "offline" || value == "error" { return value }
+            return nil
+        } as? String
+        let finalState = (((try? await query("return \(tileJS)?.dataset.cimeState || null;")) ?? nil) as? String) ?? ""
+        let cimeFrame = frames.last { $0.url.absoluteString == "about:srcdoc" }?.frame
+        let videoQuery = """
+        const video = document.querySelector('video');
+        return video ? { currentTime: video.currentTime, paused: video.paused, muted: video.muted, volume: video.volume, readyState: video.readyState, videoHeight: video.videoHeight, src: (video.currentSrc || video.src || '').slice(0, 120) } : null;
+        """
+        var frameProbe: Any? = nil
+        if let cimeFrame { frameProbe = (try? await query(videoQuery, in: cimeFrame)) ?? nil }
+        report["cimeFrame"] = ["found": cimeFrame != nil, "state": finalState, "video": frameProbe ?? "unreachable"]
+        if cimeFrame == nil { fail("no about:srcdoc frame was observed for the cime tile") }
+
+        guard state == "playing", let cimeFrame else {
+            if !open {
+                report["cimePlayback"] = ["status": "inconclusive", "state": finalState]
+                skip("cime channel \(slug) is offline (player state: \(finalState.isEmpty ? "none" : finalState)); playback, volume and unmute checks skipped")
+            } else {
+                report["cimePlayback"] = ["status": "failed", "state": finalState]
+                fail("cime player did not reach playing within 35s while the channel is live (state: \(finalState))")
+            }
+            await removeCimeTile(tileJS)
+            return
+        }
+
+        let first = (((try? await query(videoQuery, in: cimeFrame)) ?? nil) as? [String: Any])?["currentTime"] as? Double ?? -1
+        await sleep(2)
+        let second = (((try? await query(videoQuery, in: cimeFrame)) ?? nil) as? [String: Any])?["currentTime"] as? Double ?? -1
+        let advanced = second - first
+        var playback: [String: Any] = ["status": advanced > 0.5 && first >= 0 ? "passed" : "failed", "first": first, "second": second]
+        if advanced > 0.5, first >= 0 { pass("cime video is playing (advanced \(advanced)s in 2s)") }
+        else { fail("cime video stalled (currentTime \(first) -> \(second))") }
+
+        // Fullscreen button in the srcdoc player: a 44px target in a corner
+        // that leaves the video itself clickable.
+        let button = ((try? await query("""
+        const button = document.getElementById('fullscreen');
+        if (!button) return null;
+        const rect = button.getBoundingClientRect();
+        const video = document.querySelector('video');
+        return {
+          label: button.getAttribute('aria-label') || '',
+          width: rect.width, height: rect.height,
+          hitsButton: document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2) === button,
+          videoCenterIsVideo: document.elementFromPoint(innerWidth / 2, innerHeight / 2) === video,
+          opacity: Number(getComputedStyle(button).opacity),
+        };
+        """, in: cimeFrame)) ?? nil) as? [String: Any]
+        var fullscreenReport: [String: Any] = ["button": button ?? "missing"]
+        if let button,
+           button["label"] as? String == "전체 화면",
+           (button["width"] as? Double ?? 0) >= 44, (button["height"] as? Double ?? 0) >= 44,
+           button["hitsButton"] as? Bool == true, button["videoCenterIsVideo"] as? Bool == true,
+           (button["opacity"] as? Double ?? 0) > 0 {
+            pass("cime player has a 44px fullscreen button that leaves the video clickable")
+        } else {
+            fail("cime player fullscreen button is missing or misplaced: \(String(describing: button))")
+        }
+        if (try? await query("return document.documentElement.dataset.svIOSFullscreenAdapter === '1';")) as? Bool == true {
+            _ = try? await query("document.getElementById('fullscreen').click(); return true;", in: cimeFrame)
+            let entered = await poll("cime tile fullscreen", timeout: 5) {
+                try await self.query("return \(tileJS)?.classList.contains('sv-ios-fullscreen-tile') ? true : null;")
+            }
+            _ = try? await query("document.querySelector('.sv-ios-fullscreen-exit')?.click(); return true;")
+            let left = await poll("cime tile fullscreen exit", timeout: 5) {
+                try await self.query("return \(tileJS)?.classList.contains('sv-ios-fullscreen-tile') || document.body.classList.contains('fullscreen-view') ? null : true;")
+            }
+            fullscreenReport["entered"] = entered != nil
+            fullscreenReport["exited"] = left != nil
+            if entered != nil, left != nil { pass("cime fullscreen button expands and restores the tile") }
+            else { fail("cime fullscreen button did not expand and restore the tile (entered: \(entered != nil), exited: \(left != nil))") }
+        }
+        playback["fullscreen"] = fullscreenReport
+
+        // Volume panel row → set-volume → HTMLMediaElement.volume in the srcdoc player.
+        let slider = try? await query("""
+        document.querySelector('#volume-toggle')?.click();
+        const range = document.querySelector('.volume-row[data-key^="cime:"] input.volume-range');
+        if (!range) return null;
+        range.value = '40';
+        range.dispatchEvent(new Event('input', { bubbles: true }));
+        range.dispatchEvent(new Event('change', { bubbles: true }));
+        return { disabled: range.disabled };
+        """)
+        await sleep(1.5)
+        let afterVolume = ((try? await query(videoQuery, in: cimeFrame)) ?? nil) as? [String: Any]
+        // The viewer disables the row and shows its hint once the player
+        // reports that the element ignored the level.
+        let rowState = ((try? await query("""
+        const row = document.querySelector('.volume-row[data-key^="cime:"]');
+        if (!row) return null;
+        const hint = row.querySelector('.volume-hint');
+        return { disabled: !!row.querySelector('input.volume-range')?.disabled, hintVisible: !!hint && !hint.hidden };
+        """)) ?? nil) as? [String: Any]
+        let capability = (try? await query("return globalThis.__svCimeCapability || [];")) ?? nil
+        _ = try? await query("""
+        const range = document.querySelector('.volume-row[data-key^="cime:"] input.volume-range');
+        if (range) { range.value = '100'; range.dispatchEvent(new Event('input', { bubbles: true })); range.dispatchEvent(new Event('change', { bubbles: true })); }
+        document.querySelector('#volume-toggle')?.click();
+        return 'ok';
+        """)
+        let volume = (afterVolume?["volume"] as? Double) ?? -1
+        let rowUnsupported = rowState?["disabled"] as? Bool == true || rowState?["hintVisible"] as? Bool == true
+        var volumeReport: [String: Any] = [
+            "slider": slider ?? "missing", "frameVolume": volume,
+            "row": rowState ?? "missing", "capability": capability ?? "unavailable",
+        ]
+        if slider == nil { fail("volume panel has no row for the cime tile") }
+        else if abs(volume - 0.4) < 0.02 { pass("volume slider set the cime player volume to 0.4") }
+        else if rowUnsupported {
+            volumeReport["status"] = "inconclusive"
+            skip("cime player volume is \(volume) after the slider moved to 40: this WebKit ignores the volume setter (row disabled, hint shown)")
+        }
+        else { fail("cime player volume is \(volume) after moving the slider to 40") }
+        playback["volume"] = volumeReport
+
+        // Audio button → set-muted false.
+        _ = try? await query("""
+        \(tileJS)?.querySelector('[data-action="audio"]')?.click();
+        return 'ok';
+        """)
+        let unmuted = await poll("cime unmute", timeout: 5) {
+            let video = try await self.query(videoQuery, in: cimeFrame) as? [String: Any]
+            return video?["muted"] as? Bool == false ? video : nil
+        }
+        playback["afterUnmute"] = unmuted ?? "still muted"
+        if unmuted != nil { pass("audio button unmuted the cime player") } else { fail("audio button did not unmute the cime player") }
+        report["cimePlayback"] = playback
+        await removeCimeTile(tileJS)
+    }
+
+    private func removeCimeTile(_ tileJS: String) async {
+        _ = try? await query("""
+        \(tileJS)?.querySelector('[data-action="remove"]')?.click();
+        return 'ok';
+        """)
+        _ = await poll("cime tile removal", timeout: 5) {
+            try await self.query("return \(tileJS) ? null : 'removed';")
+        }
     }
 
     /// Both videos must advance over the same sampling intervals. Checking one

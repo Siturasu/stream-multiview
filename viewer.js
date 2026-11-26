@@ -1,4 +1,5 @@
-import { PRESET_GROUP_ORDER, STREAM_PRESETS } from "./src/shared/members.js";
+import { PRESET_GROUP_ORDER, STREAM_PRESETS, presetStream } from "./src/shared/members.js";
+import { cimeDirectPlayerDocument } from "./src/shared/cime-player.js";
 import { createGridLayout, createMosaicLayout } from "./src/shared/layout.js";
 import {
   makeChzzkStream,
@@ -23,6 +24,21 @@ const FULLSCREEN_CONTROLS_HIDE_DELAY_MS = 1_800;
 const DEFAULT_VOLUME = 100;
 const VOLUME_UNSUPPORTED_HINT = "이 기기에서는 볼륨 조절이 되지 않아 소리 켬/끔만 가능합니다";
 const chzzkPresets = STREAM_PRESETS.filter((preset) => preset.platform === "chzzk");
+const cimePresets = STREAM_PRESETS.filter((preset) => preset.platform === "cime");
+// Wrapper CIME tiles without a playback URL (metadata failed, or the channel
+// has none yet) try again while the tile is shown: first after
+// CIME_META_RETRY_MS, then twice as long each time up to CIME_META_RETRY_MAX_MS.
+// The delay is kept per tile and starts over once a player loads.
+const CIME_META_RETRY_MS = 30_000;
+const CIME_META_RETRY_MAX_MS = 5 * 60_000;
+// A playing CIME tile whose refreshed metadata still is not live checks again
+// this much later, at most this many extra times (refreshCimeTileMeta).
+const CIME_META_RECHECK_MS = 30_000;
+const CIME_META_RECHECK_LIMIT = 2;
+const CIME_META_FAILED_TEXT = "씨미 방송 정보를 불러오지 못했습니다";
+const CIME_NO_PLAYBACK_TEXT = "이 채널은 아직 방송 주소가 없습니다";
+const CIME_WRAPPER_CHAT_TEXT = "씨미 채팅은 앱 안에 넣을 수 없습니다(사이트가 외부 표시를 막음). ↗ 버튼으로 원본 방송에서 여세요.";
+const CIME_PLAYER_STATES = new Set(["playing", "waiting", "offline", "error"]);
 const presetKeys = new Set(STREAM_PRESETS.map((preset) => streamKey(presetStream(preset))));
 
 const body = document.body;
@@ -53,6 +69,8 @@ const volumeToggle = document.querySelector("#volume-toggle");
 const volumeRowList = document.querySelector("#volume-rows");
 const volumeEmpty = document.querySelector("#volume-empty");
 const youtubeOrigin = youtubeClientOrigin(chrome.runtime.id);
+// The chat placeholder text, restored after a per-stream notice replaced it.
+const chatEmptyDefaultHtml = chatEmpty.querySelector("p").innerHTML;
 
 let settings = { ...DEFAULT_SETTINGS };
 let streams = [];
@@ -75,12 +93,27 @@ const siteVolumes = new Map();
 // unrelated re-renders.
 const volumeRows = new Map();
 let youtubeIdentityReady = false;
+let cimeFramesReady = false;
 let fullscreenControlsTimer = null;
 
 function frameOrigin(stream) {
-  return stream.platform === "chzzk"
-    ? "https://chzzk.naver.com"
-    : "https://www.youtube.com";
+  if (stream.platform === "chzzk") return "https://chzzk.naver.com";
+  // The wrappers cannot frame ci.me pages and play the stream in a srcdoc
+  // document instead, which shares this page's origin. The extension frames
+  // the ci.me page itself (its frame headers are removed by a DNR rule).
+  if (stream.platform === "cime") return isWrapperHost ? location.origin : "https://ci.me";
+  return "https://www.youtube.com";
+}
+
+// CHZZK and CIME frames speak the "stellaview" frame protocol (player-ready,
+// quality, set-muted, set-volume, volume-capability). YouTube uses its
+// IFrame API plus a separate frame script.
+function usesStellaviewProtocol(stream) {
+  return stream.platform === "chzzk" || stream.platform === "cime";
+}
+
+function isWrapperCime(stream) {
+  return isWrapperHost && stream.platform === "cime";
 }
 
 function sendFullscreenControlsStateToFrame(frame, stream, hidden) {
@@ -180,6 +213,18 @@ async function prepareYoutubeIdentity() {
   youtubeIdentityReady = true;
 }
 
+// Extension only: installs the DNR rule that lets ci.me pages load in frames.
+async function prepareCimeFrames() {
+  if (cimeFramesReady || isWrapperHost) return;
+  const response = await chrome.runtime.sendMessage({ type: "prepare-cime-frames" });
+  if (!response?.ok) {
+    throw new Error(
+      response?.error || "씨미 플레이어를 준비하지 못했습니다. 확장 프로그램을 새로고침해 주세요.",
+    );
+  }
+  cimeFramesReady = true;
+}
+
 function safeStream(value) {
   try {
     return sanitizeStream(value);
@@ -209,7 +254,20 @@ function getStream(key) {
 function displayName(stream) {
   if (stream.name) return stream.name;
   if (stream.platform === "chzzk") return stream.videoId ? "치지직 다시보기" : metadata.get(stream.channelId)?.name || "치지직 방송";
+  if (stream.platform === "cime") return metadata.get(cimeMetaKey(stream.slug))?.name || `씨미 @${stream.slug}`;
   return "YouTube";
+}
+
+function cimeMetaKey(slug) {
+  return `cime:${slug}`;
+}
+
+// Live status kept in `metadata` for a stream: CHZZK under the channel id,
+// CIME under "cime:<slug>". YouTube has none.
+function streamMeta(stream) {
+  if (stream.platform === "chzzk") return metadata.get(stream.channelId);
+  if (stream.platform === "cime") return metadata.get(cimeMetaKey(stream.slug));
+  return null;
 }
 
 function setFormMessage(message, success = false) {
@@ -271,12 +329,6 @@ function createAvatar(member, meta) {
   return avatar;
 }
 
-function presetStream(preset) {
-  return preset.platform === "youtube"
-    ? makeYouTubeStream(preset.channelId, preset.name)
-    : makeChzzkStream(preset.channelId, preset.name);
-}
-
 function renderMemberLibrary() {
   const selected = new Set(streams.map(streamKey));
   memberGroups.replaceChildren();
@@ -290,7 +342,7 @@ function renderMemberLibrary() {
 
     for (const member of STREAM_PRESETS.filter((item) => item.group === group)) {
       const memberValue = presetStream(member);
-      const meta = member.platform === "chzzk" ? metadata.get(member.channelId) : null;
+      const meta = member.platform === "youtube" ? null : streamMeta(memberValue);
       const button = document.createElement("button");
       button.type = "button";
       button.className = `viewer-member${meta?.open ? " is-live" : ""}`;
@@ -307,7 +359,7 @@ function renderMemberLibrary() {
         ? "YouTube 라이브 채널"
         : meta?.open
           ? meta.title || meta.category || "방송 중"
-          : "";
+          : member.platform === "cime" ? "씨미 채널" : "";
       copy.append(name, detail);
       const state = document.createElement("span");
       state.className = "viewer-member-state";
@@ -332,6 +384,7 @@ async function toggleMember(stream) {
     await setStreams(streams.filter((item) => streamKey(item) !== key));
   } else {
     if (stream.platform === "youtube") await prepareYoutubeIdentity();
+    if (stream.platform === "cime") await prepareCimeFrames();
     await setStreams([...streams, stream]);
   }
   closeCompactPanels();
@@ -348,7 +401,22 @@ function playerOptions() {
   };
 }
 
+function cimeSubtitle(tile, meta) {
+  if (tile.dataset.cimeNotice) return tile.dataset.cimeNotice;
+  const base = meta?.open
+    ? `${meta.title || meta.category || "방송 중"} · ${formatViewers(meta.viewers)}`
+    : meta ? "현재 오프라인" : "씨미";
+  const state = tile.dataset.cimeState;
+  return state === "offline" || state === "error" ? `${base} · 다시 연결하는 중` : base;
+}
+
 function updateTileText(tile, stream) {
+  if (stream.platform === "cime") {
+    const meta = streamMeta(stream);
+    tile.querySelector(".tile-name").textContent = meta?.name || displayName(stream);
+    tile.querySelector(".tile-subtitle").textContent = cimeSubtitle(tile, meta);
+    return;
+  }
   const meta = stream.platform === "chzzk" ? metadata.get(stream.channelId) : null;
   tile.querySelector(".tile-name").textContent = meta?.name || displayName(stream);
   tile.querySelector(".tile-subtitle").textContent = meta?.open
@@ -360,8 +428,9 @@ function updateTileText(tile, stream) {
       : "YouTube";
 }
 
+// Repeats the audio state until the CHZZK or CIME frame reports player-ready.
 function startChzzkHandshake(tile, stream) {
-  if (stream.platform !== "chzzk") return;
+  if (!usesStellaviewProtocol(stream)) return;
   tile.dataset.playerReady = "0";
   let attempts = 0;
   let wasConnected = false;
@@ -388,9 +457,12 @@ function createTile(stream) {
   if (stream.platform === "youtube") {
     frame.referrerPolicy = "strict-origin-when-cross-origin";
   }
-  frame.src = streamToPlayerUrl(stream, playerOptions());
-  platform.textContent = stream.platform === "chzzk" ? "CHZZK" : "YOUTUBE";
+  // Wrapper CIME tiles get a srcdoc player once the playback URL is known
+  // (loadCimeDirectPlayer below); they never load a ci.me page.
+  if (!isWrapperCime(stream)) frame.src = streamToPlayerUrl(stream, playerOptions());
+  platform.textContent = stream.platform === "chzzk" ? "CHZZK" : stream.platform === "cime" ? "CIME" : "YOUTUBE";
   platform.classList.toggle("youtube", stream.platform === "youtube");
+  platform.classList.toggle("cime", stream.platform === "cime");
   updateTileText(tile, stream);
 
   tile.querySelector(".tile-actions").addEventListener("click", (event) => {
@@ -410,6 +482,7 @@ function createTile(stream) {
   });
 
   startChzzkHandshake(tile, stream);
+  if (isWrapperCime(stream)) loadCimeDirectPlayer(tile, stream);
 
   const dragHandle = tile.querySelector(".drag-handle");
   // Cross-origin stream frames swallow mouse/drag events. Unless their hit
@@ -454,6 +527,89 @@ function createTile(stream) {
   return tile;
 }
 
+// Wrapper only. Fetches the CIME metadata through the native bridge and plays
+// its IVS playback URL in a srcdoc document (see src/shared/cime-player.js).
+// Without a playback URL the tile says why (no metadata or a failed /live
+// request, or metadata without a playback URL) and tries again with a growing delay (CIME_META_RETRY_MS) while
+// it is shown. A newer call (reload) or the tile's removal ends an older one.
+async function loadCimeDirectPlayer(tile, stream) {
+  const key = streamKey(stream);
+  const generation = String((Number(tile.dataset.cimeLoad) || 0) + 1);
+  tile.dataset.cimeLoad = generation;
+  const isCurrent = () => tiles.get(key) === tile && tile.dataset.cimeLoad === generation;
+
+  let meta = null;
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "fetch-cime-meta", slug: stream.slug });
+    if (response?.ok && response.meta) meta = response.meta;
+  } catch {
+    meta = null;
+  }
+  if (!isCurrent()) return;
+
+  if (meta) metadata.set(cimeMetaKey(stream.slug), meta);
+  const documentHtml = meta?.playback
+    ? cimeDirectPlayerDocument({ playbackUrl: meta.playback, viewerOrigin: location.origin })
+    : null;
+  if (documentHtml) {
+    delete tile.dataset.cimeNotice;
+    delete tile.dataset.cimeRetryMs;
+    tile.querySelector(".stream-frame").srcdoc = documentHtml;
+  } else {
+    // A failed /live request (meta.liveUnavailable) is a metadata failure,
+    // not a channel without a playback URL.
+    tile.dataset.cimeNotice = meta && !meta.liveUnavailable ? CIME_NO_PLAYBACK_TEXT : CIME_META_FAILED_TEXT;
+    const delay = Number(tile.dataset.cimeRetryMs) || CIME_META_RETRY_MS;
+    tile.dataset.cimeRetryMs = String(Math.min(delay * 2, CIME_META_RETRY_MAX_MS));
+    setTimeout(() => {
+      if (isCurrent()) loadCimeDirectPlayer(tile, stream);
+    }, delay);
+  }
+  updateTileText(tile, getStream(key) || stream);
+  updateVolumeRow(key);
+  if (meta) renderMemberLibrary();
+}
+
+// A CIME player that starts while the stored status still says the channel is
+// not live refreshes that status, so the subtitle stops saying 현재 오프라인.
+// ci.me can lag behind the stream, so while the player keeps playing and the
+// metadata still says not live it checks again CIME_META_RECHECK_MS later, at
+// most CIME_META_RECHECK_LIMIT more times. tile.dataset.cimeMetaRefresh keeps
+// one request per tile in flight; a removed tile stops the checks.
+async function refreshCimeTileMeta(tile, stream, recheck = 0) {
+  if (tile.dataset.cimeMetaRefresh === "1") return;
+  tile.dataset.cimeMetaRefresh = "1";
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "fetch-cime-meta", slug: stream.slug });
+    if (response?.ok && response.meta) metadata.set(cimeMetaKey(stream.slug), response.meta);
+  } catch {
+    // Best effort; the next status refresh tries again.
+  } finally {
+    delete tile.dataset.cimeMetaRefresh;
+  }
+  const key = streamKey(stream);
+  const isCurrent = () => tiles.get(key) === tile;
+  if (isCurrent()) updateTileText(tile, getStream(key) || stream);
+  updateVolumeRow(key);
+  renderMemberLibrary();
+  if (
+    isCurrent() &&
+    recheck < CIME_META_RECHECK_LIMIT &&
+    tile.dataset.cimeMetaRecheck !== "1" &&
+    streamMeta(stream)?.open !== true &&
+    tile.dataset.cimeState === "playing"
+  ) {
+    // One pending check per tile, so playing/waiting flaps add no chains.
+    tile.dataset.cimeMetaRecheck = "1";
+    setTimeout(() => {
+      delete tile.dataset.cimeMetaRecheck;
+      if (isCurrent() && tile.dataset.cimeState === "playing" && streamMeta(stream)?.open !== true) {
+        refreshCimeTileMeta(tile, stream, recheck + 1);
+      }
+    }, CIME_META_RECHECK_MS);
+  }
+}
+
 function reconcileTiles() {
   const wanted = new Set(streams.map(streamKey));
   for (const [key, tile] of tiles) {
@@ -488,6 +644,16 @@ function reloadTile(key) {
   const quality = tile.querySelector(".quality-pill");
   quality.textContent = "다시 불러오는 중";
   quality.classList.remove("is-ready");
+  if (isWrapperCime(stream)) {
+    sendStellaviewCommand(frame, stream, { type: "teardown" });
+    frame.removeAttribute("srcdoc");
+    delete tile.dataset.cimeState;
+    // A manual reload starts the retry delay over.
+    delete tile.dataset.cimeRetryMs;
+    startChzzkHandshake(tile, stream);
+    loadCimeDirectPlayer(tile, stream);
+    return;
+  }
   frame.src = streamToPlayerUrl(stream, playerOptions());
   startChzzkHandshake(tile, stream);
 }
@@ -516,6 +682,10 @@ function handleTileAction(key, action) {
 
 function sendChzzkCommand(frame, payload) {
   frame.contentWindow?.postMessage({ source: "stellaview", ...payload }, "https://chzzk.naver.com");
+}
+
+function sendStellaviewCommand(frame, stream, payload) {
+  frame.contentWindow?.postMessage({ source: "stellaview", ...payload }, frameOrigin(stream));
 }
 
 function sendYouTubeCommand(frame, muted) {
@@ -549,6 +719,8 @@ function applyAudioState(tile, stream) {
   const frame = tile.querySelector(".stream-frame");
   if (stream.platform === "chzzk") {
     sendChzzkCommand(frame, { type: "set-muted", muted });
+  } else if (stream.platform === "cime") {
+    sendStellaviewCommand(frame, stream, { type: "set-muted", muted });
   } else {
     sendYouTubeCommand(frame, muted);
   }
@@ -618,6 +790,8 @@ function applyVolumeState(tile, stream) {
   const volume = getTileVolume(streamKey(stream));
   if (stream.platform === "chzzk") {
     sendChzzkCommand(frame, { type: "set-volume", volume: volume / 100 });
+  } else if (stream.platform === "cime") {
+    sendStellaviewCommand(frame, stream, { type: "set-volume", volume: volume / 100 });
   } else {
     sendYouTubeVolume(frame, volume);
   }
@@ -679,7 +853,7 @@ function updateVolumeRow(key) {
   const row = volumeRows.get(key);
   const stream = getStream(key);
   if (!row || !stream) return;
-  const meta = stream.platform === "chzzk" ? metadata.get(stream.channelId) : null;
+  const meta = stream.platform === "chzzk" || stream.platform === "cime" ? streamMeta(stream) : null;
   row.name.textContent = meta?.name || displayName(stream);
 
   const active = activeAudioKeys.has(key);
@@ -805,12 +979,29 @@ function closeChatContent() {
   chatFrame.src = "about:blank";
   chatFrame.hidden = true;
   chatEmpty.hidden = false;
+  chatEmpty.querySelector("p").innerHTML = chatEmptyDefaultHtml;
   chatTitle.textContent = "채팅을 선택하세요";
+}
+
+// The extension frames the ci.me chat (DNR rule); the wrappers cannot, since
+// ci.me only allows itself and its studio as frame ancestors.
+function showCimeWrapperChatNotice(key, stream) {
+  activeChatKey = key;
+  setChatVisibility(true);
+  chatTitle.textContent = displayName(stream);
+  chatFrame.src = "about:blank";
+  chatFrame.hidden = true;
+  chatEmpty.hidden = false;
+  chatEmpty.querySelector("p").textContent = CIME_WRAPPER_CHAT_TEXT;
 }
 
 function openChat(key) {
   const stream = getStream(key);
   if (!stream) return;
+  if (isWrapperCime(stream)) {
+    showCimeWrapperChatNotice(key, stream);
+    return;
+  }
   const url = streamToChatUrl(stream, { embedDomain: location.hostname });
   activeChatKey = key;
   setChatVisibility(true);
@@ -866,6 +1057,27 @@ async function refreshStatuses() {
     if (stream.platform === "chzzk" && stream.channelId) channelIds.add(stream.channelId);
   }
 
+  const cimeSlugs = new Set(cimePresets.map((preset) => presetStream(preset)?.slug).filter(Boolean));
+  for (const stream of streams) {
+    if (stream.platform === "cime") cimeSlugs.add(stream.slug);
+  }
+
+  // CIME is best effort: it is not awaited (a slow ci.me must not hold the
+  // CHZZK refresh) and never counts toward the CHZZK snapshot. Its results
+  // update the library and the CIME tiles when they arrive.
+  Promise.allSettled([...cimeSlugs].map(async (slug) => {
+    const response = await chrome.runtime.sendMessage({ type: "fetch-cime-meta", slug });
+    if (response?.ok && response.meta) metadata.set(cimeMetaKey(slug), response.meta);
+  })).then(() => {
+    renderMemberLibrary();
+    for (const stream of streams) {
+      if (stream.platform !== "cime") continue;
+      const tile = tiles.get(streamKey(stream));
+      if (tile) updateTileText(tile, stream);
+    }
+    updateVolumeRows();
+  });
+
   const succeeded = new Set();
   await Promise.allSettled([...channelIds].map(async (channelId) => {
     const response = await chrome.runtime.sendMessage({ type: "fetch-chzzk-meta", channelId });
@@ -886,7 +1098,7 @@ async function refreshStatuses() {
 
 async function resolveStream(input) {
   let stream = parseStreamInput(input);
-  if (!stream) throw new Error("지원하는 치지직 또는 YouTube 주소가 아닙니다.");
+  if (!stream) throw new Error("지원하는 치지직, YouTube 또는 씨미 주소가 아닙니다.");
   if (stream.needsResolution) {
     const response = await chrome.runtime.sendMessage({ type: "resolve-youtube", input });
     if (!response?.ok || !response.stream) {
@@ -897,6 +1109,16 @@ async function resolveStream(input) {
   stream = safeStream(stream);
   if (!stream) throw new Error("방송 주소를 안전하게 해석하지 못했습니다.");
   if (stream.platform === "youtube") await prepareYoutubeIdentity();
+  if (stream.platform === "cime") {
+    await prepareCimeFrames();
+    if (!stream.name) {
+      const response = await chrome.runtime.sendMessage({ type: "fetch-cime-meta", slug: stream.slug });
+      if (response?.ok && response.meta) {
+        metadata.set(cimeMetaKey(stream.slug), response.meta);
+        stream = { ...stream, name: response.meta.name || undefined };
+      }
+    }
+  }
   if (stream.platform === "chzzk" && stream.channelId && !stream.name) {
     const response = await chrome.runtime.sendMessage({ type: "fetch-chzzk-meta", channelId: stream.channelId });
     if (response?.ok && response.meta) {
@@ -1083,14 +1305,48 @@ window.addEventListener("message", (event) => {
   // frame may send. They arrive from the frame script under its own source
   // tag; the sender window and origin were already matched to this tile above.
   if (event.data?.type === "volume-capability" || event.data?.type === "volume-state") {
-    const expected = stream.platform === "chzzk" ? "stellaview" : "stellaview-youtube";
+    const expected = usesStellaviewProtocol(stream) ? "stellaview" : "stellaview-youtube";
     if (event.data.source !== expected) return;
     if (event.data.type === "volume-capability") setVolumeCapability(key, event.data);
     else setSiteVolume(key, event.data.volume);
     return;
   }
 
-  if (event.data?.source !== "stellaview" || stream.platform !== "chzzk") return;
+  if (event.data?.source !== "stellaview" || !usesStellaviewProtocol(stream)) return;
+
+  // Wrapper CIME player state, mirrored on the tile for the subtitle and for
+  // the harness (tile.dataset.cimeState).
+  if (event.data.type === "cime-player-state") {
+    if (stream.platform === "cime" && CIME_PLAYER_STATES.has(event.data.state)) {
+      const previous = tile.dataset.cimeState;
+      tile.dataset.cimeState = event.data.state;
+      updateTileText(tile, stream);
+      if (event.data.state === "playing" && previous !== "playing" && streamMeta(stream)?.open !== true) {
+        refreshCimeTileMeta(tile, stream);
+      }
+    }
+    return;
+  }
+
+  // The frame's own player controls were used (content/cime-embed.js reports
+  // this); adopt the result as the tile's audio state and mixer level.
+  // "audio-corrected" reports are ignored.
+  if (event.data.type === "audio-user-changed") {
+    if (typeof event.data.muted === "boolean") {
+      if (event.data.muted) activeAudioKeys.delete(key);
+      else activeAudioKeys.add(key);
+      updateAudioClasses();
+    }
+    // The frame already plays at this level, so only the mixer follows; sending
+    // set-volume back to the frame would fight a drag in progress.
+    const volume = event.data.volume;
+    if (typeof volume === "number" && Number.isFinite(volume) && volume >= 0 && volume <= 1) {
+      tileVolumes.set(key, clampVolume(volume * 100));
+      updateVolumeRow(key);
+      saveSettings().catch((error) => console.error("Failed to save the volume", error));
+    }
+    return;
+  }
 
   if (event.data.type === "player-ready") {
     tile.dataset.playerReady = "1";
@@ -1242,6 +1498,14 @@ async function initialize() {
     } catch (error) {
       console.error("Failed to prepare YouTube player", error);
       setFormMessage(error?.message || "YouTube 플레이어를 준비하지 못했습니다.");
+    }
+  }
+  if (!isWrapperHost && streams.some((stream) => stream.platform === "cime")) {
+    try {
+      await prepareCimeFrames();
+    } catch (error) {
+      console.error("Failed to prepare CIME frames", error);
+      setFormMessage(error?.message || "씨미 플레이어를 준비하지 못했습니다.");
     }
   }
 

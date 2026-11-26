@@ -10,9 +10,11 @@
   }
 
   // CHZZK serves both live channels and /video/<id> replays inside tiles.
+  const isCime = url.hostname === "ci.me" && /^\/@[a-z0-9_.-]{1,40}\/live\/?$/.test(url.pathname);
   const supportedFrame =
     (url.hostname === "chzzk.naver.com" && /^\/(?:live|video)\//.test(url.pathname)) ||
-    (url.hostname === "www.youtube.com" && /^\/embed\//.test(url.pathname));
+    (url.hostname === "www.youtube.com" && /^\/embed\//.test(url.pathname)) ||
+    isCime;
   if (!embedded || !supportedFrame || url.searchParams.get("sv") !== "1") {
     return;
   }

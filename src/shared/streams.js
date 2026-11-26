@@ -1,5 +1,7 @@
 const CHZZK_CHANNEL_ID_PATTERN = /^[0-9a-f]{32}$/i;
 const CHZZK_VIDEO_ID_PATTERN = /^[1-9][0-9]{0,15}$/;
+// CIME (ci.me) channel slugs are lowercase; the API answers 404 for other cases.
+const CIME_SLUG_PATTERN = /^[a-z0-9_.-]{1,40}$/;
 const YOUTUBE_VIDEO_ID_PATTERN = /^[A-Za-z0-9_-]{11}$/;
 const YOUTUBE_CHANNEL_ID_PATTERN = /^UC[A-Za-z0-9_-]{22}$/;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
@@ -11,6 +13,8 @@ const CHROME_EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
 const EXTENSION_ORIGIN_PATTERN = /^chrome-extension:\/\/[a-p]{32}$/;
 
 const CHZZK_HOSTS = new Set(["chzzk.naver.com", "www.chzzk.naver.com", "m.chzzk.naver.com"]);
+const CIME_HOSTS = new Set(["ci.me", "www.ci.me"]);
+const CIME_CHANNEL_TABS = new Set(["live", "vods", "clips", "info", "store", "fan-meeting"]);
 const YOUTUBE_HOSTS = new Set([
   "youtube.com",
   "www.youtube.com",
@@ -180,6 +184,24 @@ function parseChzzkUrl(url) {
   return channelId ? makeChzzkStream(channelId) : null;
 }
 
+function parseCimeUrl(url) {
+  if (!CIME_HOSTS.has(url.hostname.toLowerCase())) {
+    return null;
+  }
+
+  const segments = decodedPathSegments(url);
+  if (
+    !segments ||
+    segments.length < 1 ||
+    segments.length > 2 ||
+    !segments[0].startsWith("@") ||
+    (segments.length === 2 && !CIME_CHANNEL_TABS.has(segments[1].toLowerCase()))
+  ) {
+    return null;
+  }
+  return makeCimeStream(segments[0].slice(1));
+}
+
 function parseYoutubeUrl(url) {
   const hostname = url.hostname.toLowerCase();
   const segments = decodedPathSegments(url);
@@ -245,6 +267,22 @@ export function makeChzzkVideo(videoId, name) {
 }
 
 /**
+ * Build a normalized CIME (ci.me) stream from a channel slug.
+ */
+export function makeCimeStream(slug, name) {
+  if (typeof slug !== "string") {
+    return null;
+  }
+  const normalized = slug.trim().replace(/^@/, "").toLowerCase();
+  // "." and ".." match the pattern but would be normalized away inside an API
+  // URL path and so reach a different endpoint.
+  if (!CIME_SLUG_PATTERN.test(normalized) || normalized === "." || normalized === "..") {
+    return null;
+  }
+  return withName({ platform: "cime", slug: normalized }, name);
+}
+
+/**
  * Build a normalized YouTube video or UC channel stream.
  */
 export function makeYouTubeStream(videoOrChannel, name) {
@@ -291,7 +329,7 @@ export function parseStreamInput(input) {
     return null;
   }
 
-  return parseChzzkUrl(url) || parseYoutubeUrl(url);
+  return parseChzzkUrl(url) || parseCimeUrl(url) || parseYoutubeUrl(url);
 }
 
 /**
@@ -311,6 +349,10 @@ export function sanitizeStream(stream) {
       return makeChzzkVideo(stream.videoId, stream.name);
     }
     return makeChzzkStream(stream.channelId, stream.name);
+  }
+
+  if (platform === "cime") {
+    return makeCimeStream(stream.slug, stream.name);
   }
 
   if (platform !== "youtube") {
@@ -354,6 +396,9 @@ export function streamKey(stream) {
 
   if (safeStream.platform === "chzzk") {
     return safeStream.videoId ? `chzzk:video:${safeStream.videoId}` : `chzzk:${safeStream.channelId}`;
+  }
+  if (safeStream.platform === "cime") {
+    return `cime:${safeStream.slug}`;
   }
   if (safeStream.needsResolution) {
     return `youtube:resolve:${safeStream.sourceUrl}`;
@@ -429,6 +474,12 @@ export function streamToPlayerUrl(stream, options = {}) {
     return url.href;
   }
 
+  if (safeStream.platform === "cime") {
+    const url = new URL(`https://ci.me/@${safeStream.slug}/live`);
+    url.searchParams.set("sv", "1");
+    return url.href;
+  }
+
   const url = safeStream.videoId
     ? new URL(`https://www.youtube.com/embed/${safeStream.videoId}`)
     : new URL("https://www.youtube.com/embed/live_stream");
@@ -456,6 +507,9 @@ export function streamToChatUrl(stream, options = {}) {
     if (safeStream.videoId) return null;
     return `https://chzzk.naver.com/live/${safeStream.channelId}/chat`;
   }
+  if (safeStream.platform === "cime") {
+    return `https://ci.me/@${safeStream.slug}/live/chat`;
+  }
   if (!safeStream.videoId) {
     return null;
   }
@@ -478,6 +532,9 @@ export function streamToOriginalUrl(stream) {
     return safeStream.videoId
       ? `https://chzzk.naver.com/video/${safeStream.videoId}`
       : `https://chzzk.naver.com/live/${safeStream.channelId}`;
+  }
+  if (safeStream.platform === "cime") {
+    return `https://ci.me/@${safeStream.slug}/live`;
   }
   if (safeStream.needsResolution) {
     return safeStream.sourceUrl;

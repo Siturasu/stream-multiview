@@ -1,5 +1,7 @@
+import { isSafeCimePlaybackUrl } from "./src/shared/cime-player.js";
 import {
   makeChzzkStream,
+  makeCimeStream,
   makeYouTubeStream,
   parseStreamInput,
   sanitizeStream,
@@ -20,6 +22,9 @@ const MAX_YOUTUBE_HTML_LENGTH = 4_000_000;
 const REQUEST_TIMEOUT_MS = 12_000;
 const TEXT_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/g;
 export const YOUTUBE_EMBED_IDENTITY_RULE_ID = 731_001;
+export const CIME_FRAME_EMBED_RULE_ID = 731_003;
+const CIME_ORIGIN = "https://ci.me";
+const EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
 
 class SafeRequestError extends Error {}
 
@@ -63,6 +68,46 @@ export async function prepareYoutubePlayer(extensionApi = globalThis.chrome) {
     origin: youtubeClientOrigin(extensionApi.runtime.id),
     ruleId: YOUTUBE_EMBED_IDENTITY_RULE_ID,
   };
+}
+
+// CIME sends `X-Frame-Options: SAMEORIGIN` on its live page and a restrictive
+// `frame-ancestors` on its chat page. Drop the framing headers only for
+// sub_frame navigations this extension starts itself.
+export function cimeFrameEmbedRule(extensionId) {
+  if (typeof extensionId !== "string" || !EXTENSION_ID_PATTERN.test(extensionId)) {
+    return null;
+  }
+
+  return {
+    id: CIME_FRAME_EMBED_RULE_ID,
+    priority: 1,
+    action: {
+      type: "modifyHeaders",
+      responseHeaders: [
+        { header: "Content-Security-Policy", operation: "remove" },
+        { header: "X-Frame-Options", operation: "remove" },
+      ],
+    },
+    condition: {
+      urlFilter: "|https://ci.me/@",
+      requestDomains: ["ci.me"],
+      initiatorDomains: [extensionId],
+      resourceTypes: ["sub_frame"],
+    },
+  };
+}
+
+export async function prepareCimeFrames(extensionApi = globalThis.chrome) {
+  const rule = cimeFrameEmbedRule(extensionApi?.runtime?.id);
+  if (!rule || !extensionApi?.declarativeNetRequest?.updateDynamicRules) {
+    throw new SafeRequestError("씨미 플레이어 표시 규칙을 준비하지 못했습니다.");
+  }
+
+  await extensionApi.declarativeNetRequest.updateDynamicRules({
+    removeRuleIds: [CIME_FRAME_EMBED_RULE_ID],
+    addRules: [rule],
+  });
+  return { ruleId: CIME_FRAME_EMBED_RULE_ID };
 }
 
 async function fetchWithTimeout(url, options) {
@@ -364,7 +409,7 @@ function safeImageUrl(value) {
       url.username !== "" ||
       url.password !== "" ||
       url.port !== "" ||
-      !["pstatic.net", "naver.net", "naver.com"].some((root) =>
+      !["pstatic.net", "naver.net", "naver.com", "ci.me"].some((root) =>
         hostnameIs(hostname, root),
       )
     ) {
@@ -456,6 +501,70 @@ export async function fetchChzzkMeta(channelId) {
   };
 }
 
+async function fetchCimeJson(path) {
+  let response;
+  try {
+    response = await fetchWithTimeout(`${CIME_ORIGIN}${path}`, {
+      method: "GET",
+      credentials: "omit",
+      cache: "no-store",
+      referrerPolicy: "no-referrer",
+      headers: { Accept: "application/json" },
+    });
+  } catch {
+    throw new SafeRequestError("씨미 방송 정보를 불러오지 못했습니다.");
+  }
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw new SafeRequestError("씨미 방송 정보를 불러오지 못했습니다.");
+  }
+  try {
+    const payload = await response.json();
+    return payload && typeof payload === "object" ? payload.data ?? null : null;
+  } catch {
+    throw new SafeRequestError("씨미 방송 정보 형식이 올바르지 않습니다.");
+  }
+}
+
+export async function fetchCimeMeta(slug) {
+  const stream = makeCimeStream(slug);
+  if (!stream) {
+    throw new SafeRequestError("올바른 씨미 채널 주소가 아닙니다.");
+  }
+
+  const path = `/api/app/channels/${encodeURIComponent(stream.slug)}`;
+  // The live endpoint answers even while offline and still carries the fixed
+  // channel playback URL, so always ask for it alongside the channel. A failed
+  // live request (timeout, 5xx) is reported as liveUnavailable so the viewer
+  // can tell it from a channel that simply has no playback URL.
+  let liveFailed = false;
+  const [channel, live] = await Promise.all([
+    fetchCimeJson(path),
+    fetchCimeJson(`${path}/live`).catch(() => {
+      liveFailed = true;
+      return null;
+    }),
+  ]);
+  if (!channel || typeof channel !== "object") {
+    throw new SafeRequestError("씨미 채널을 찾지 못했습니다.");
+  }
+  const safeLive = live && typeof live === "object" ? live : null;
+  const open = channel.isLive === true && safeLive?.state === "ACTIVE";
+  const playbackUrl = safeLive?.playback?.url;
+
+  const meta = {
+    name: safeText(channel.name, 100) || stream.slug,
+    image: safeImageUrl(channel.imageUrl),
+    open,
+    title: open ? safeText(safeLive?.title, 200) : "",
+    viewers: open ? safeViewerCount(safeLive?.curViewerCnt) : null,
+    category: open ? safeText(safeLive?.category?.name, 100) : "",
+    playback: isSafeCimePlaybackUrl(playbackUrl) ? new URL(playbackUrl).href : null,
+  };
+  if (liveFailed) meta.liveUnavailable = true;
+  return meta;
+}
+
 let viewerOpenOperation = null;
 
 async function doOpenViewer(extensionApi) {
@@ -486,10 +595,14 @@ async function handleMessage(message, extensionApi) {
       return { ok: true, stream: await resolveYoutubeInput(message.input) };
     case "fetch-chzzk-meta":
       return { ok: true, meta: await fetchChzzkMeta(message.channelId) };
+    case "fetch-cime-meta":
+      return { ok: true, meta: await fetchCimeMeta(message.slug) };
     case "open-viewer":
       return { ok: true, ...(await openViewer(extensionApi)) };
     case "prepare-youtube-player":
       return { ok: true, ...(await prepareYoutubePlayer(extensionApi)) };
+    case "prepare-cime-frames":
+      return { ok: true, ...(await prepareCimeFrames(extensionApi)) };
     default:
       return null;
   }
@@ -502,6 +615,7 @@ if (extensionApi?.runtime?.onInstalled && extensionApi?.storage?.local) {
     void Promise.all([
       setInstallDefaults(extensionApi),
       prepareYoutubePlayer(extensionApi),
+      prepareCimeFrames(extensionApi),
     ]).catch((error) => {
       console.error("Failed to initialize extension defaults", error);
     });
@@ -511,6 +625,9 @@ if (extensionApi?.runtime?.onInstalled && extensionApi?.storage?.local) {
 if (extensionApi?.declarativeNetRequest?.updateDynamicRules) {
   void prepareYoutubePlayer(extensionApi).catch((error) => {
     console.error("Failed to initialize YouTube player identity", error);
+  });
+  void prepareCimeFrames(extensionApi).catch((error) => {
+    console.error("Failed to initialize CIME frame rule", error);
   });
 }
 
@@ -522,8 +639,10 @@ if (extensionApi?.runtime?.onMessage) {
       ![
         "resolve-youtube",
         "fetch-chzzk-meta",
+        "fetch-cime-meta",
         "open-viewer",
         "prepare-youtube-player",
+        "prepare-cime-frames",
       ].includes(message.type)
     ) {
       return false;

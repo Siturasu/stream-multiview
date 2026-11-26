@@ -32,9 +32,10 @@ enum ViewerConfiguration {
 
     /// Hosts the page may fetch through the native bridge. The viewer origin
     /// is not on api.chzzk.naver.com's CORS allowlist, and YouTube channel
-    /// HTML is cross-origin, so those requests go through URLSession, which
-    /// sends no Origin header.
-    static let nativeFetchHosts: Set<String> = ["api.chzzk.naver.com", "www.youtube.com"]
+    /// HTML is cross-origin, and the CIME channel API sends no CORS headers at
+    /// all, so those requests go through URLSession, which sends no Origin
+    /// header.
+    static let nativeFetchHosts: Set<String> = ["api.chzzk.naver.com", "www.youtube.com", "ci.me"]
 
     // CHZZK's NNG user client uses the game common API, not its live API host.
     // Both the first-party login check and embedded-session check use this URL.

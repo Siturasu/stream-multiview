@@ -1,0 +1,56 @@
+/* CIME live page inside a StellaView tile: only the video player stays.
+ *
+ * Every rule below the page reset starts with `html.sv-embedded:not(#sv-boost)`:
+ * the `:not(#id)` adds ID-level specificity without matching anything else.
+ * CIME's own `!important` rules are more specific than plain class selectors;
+ * under 768 px wide (most mosaic tiles) `[data-is-mobile="false"]
+ * [data-layout-video-state="screen"] .video_frame__*` sets `max-height: 50vh`,
+ * which squeezed the player into the top half of the tile. */
+html.sv-embedded,
+html.sv-embedded body {
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0 !important;
+  overflow: hidden !important;
+  background: #000 !important;
+}
+
+html.sv-embedded:not(#sv-boost) .sv-shell-hidden {
+  display: none !important;
+}
+
+html.sv-embedded:not(#sv-boost) .sv-player-path {
+  overflow: visible !important;
+  contain: none !important;
+  clip-path: none !important;
+  filter: none !important;
+  transform: none !important;
+  will-change: auto !important;
+}
+
+html.sv-embedded:not(#sv-boost) .sv-player-root {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 2147483646 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: none !important;
+  max-height: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  background: #000 !important;
+}
+
+html.sv-embedded:not(#sv-boost) .sv-player-root .video-js,
+html.sv-embedded:not(#sv-boost) .sv-player-root [class*="video_wrapper"] {
+  width: 100% !important;
+  height: 100% !important;
+  padding: 0 !important;
+}
+
+html.sv-embedded:not(#sv-boost) .sv-player-root video {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important;
+  background: #000 !important;
+}

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Stream Multiview",
   "short_name": "Stream Multiview",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "개인용 영상 멀티뷰 확장 프로그램",
   "minimum_chrome_version": "121",
   "icons": {
@@ -19,7 +19,8 @@
   "host_permissions": [
     "https://chzzk.naver.com/*",
     "https://api.chzzk.naver.com/*",
-    "https://www.youtube.com/*"
+    "https://www.youtube.com/*",
+    "https://ci.me/*"
   ],
   "action": {
     "default_title": "Stream Multiview 열기",
@@ -52,9 +53,23 @@
     },
     {
       "matches": [
+        "https://ci.me/*"
+      ],
+      "js": [
+        "content/cime-embed.js"
+      ],
+      "css": [
+        "content/cime-embed.css"
+      ],
+      "all_frames": true,
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
         "https://chzzk.naver.com/live/*",
         "https://chzzk.naver.com/video/*",
-        "https://www.youtube.com/embed/*"
+        "https://www.youtube.com/embed/*",
+        "https://ci.me/*"
       ],
       "js": [
         "content/frame-activity.js"
@@ -75,6 +90,6 @@
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; frame-src https://chzzk.naver.com https://www.youtube.com; connect-src https://api.chzzk.naver.com https://www.youtube.com; img-src 'self' data: https://*.pstatic.net https://*.naver.net https://*.googleusercontent.com;"
+    "extension_pages": "script-src 'self'; object-src 'self'; frame-src https://chzzk.naver.com https://www.youtube.com https://ci.me; connect-src https://api.chzzk.naver.com https://www.youtube.com https://ci.me; img-src 'self' data: https://*.pstatic.net https://*.naver.net https://*.googleusercontent.com https://streaming.cf.ci.me;"
   }
 }
