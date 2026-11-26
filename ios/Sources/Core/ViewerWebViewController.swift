@@ -101,7 +101,9 @@ final class ViewerWebViewController: NSObject, WKNavigationDelegate, WKUIDelegat
 
         webView = WKWebView(frame: .zero, configuration: configuration)
         webView.customUserAgent = ViewerConfiguration.userAgent
+        #if DEBUG
         webView.isInspectable = true
+        #endif
         super.init()
 
         webView.navigationDelegate = self

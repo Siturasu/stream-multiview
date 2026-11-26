@@ -273,6 +273,36 @@ function check(label, value) {
   const { fetchCimeMeta } = await import("../../background.js");
   check("background.js imports without a chrome global", typeof fetchCimeMeta === "function");
 
+  const { cimeFrameEmbedRules, CIME_FRAME_EMBED_RULE_ID, CIME_CHAT_FRAME_EMBED_RULE_ID } =
+    await import("../../background.js");
+  assert.equal(cimeFrameEmbedRules("not-an-id"), null);
+  const [playerRule, chatRule] = cimeFrameEmbedRules("a".repeat(32));
+  assert.equal(playerRule.id, CIME_FRAME_EMBED_RULE_ID);
+  assert.equal(chatRule.id, CIME_CHAT_FRAME_EMBED_RULE_ID);
+  assert.deepEqual(playerRule.action.responseHeaders.map((h) => h.header), ["X-Frame-Options"]);
+  assert.deepEqual(chatRule.action.responseHeaders.map((h) => h.header), ["Content-Security-Policy", "X-Frame-Options"]);
+  for (const rule of [playerRule, chatRule]) {
+    assert.deepEqual(rule.condition.initiatorDomains, ["a".repeat(32)]);
+    assert.deepEqual(rule.condition.resourceTypes, ["sub_frame"]);
+  }
+  const matches = (rule, url) => new RegExp(rule.condition.regexFilter).test(url);
+  const cimeStream = { platform: "cime", slug: "hebi" };
+  const player = streamToPlayerUrl(cimeStream);
+  const chat = streamToChatUrl(cimeStream);
+  assert.ok(matches(playerRule, player) && !matches(chatRule, player), player);
+  assert.ok(matches(chatRule, chat) && !matches(playerRule, chat), chat);
+  for (const other of [
+    "https://ci.me/@hebi/vods",
+    "https://ci.me/@hebi",
+    "https://ci.me/api/app/channels/hebi",
+    "https://ci.me/@hebi/live/chat/extra",
+    "https://ci.me.example.com/@hebi/live",
+    "https://studio.ci.me/@hebi/live",
+  ]) {
+    assert.ok(!matches(playerRule, other) && !matches(chatRule, other), other);
+  }
+  check("CIME frame rules: player drops only X-Frame-Options, CSP removal limited to the chat path", true);
+
   const realFetch = globalThis.fetch;
   const playback = "https://abc.ap-northeast-2.playback.live-video.net/api/video/v1/x.m3u8";
   const json = (status, data) => new Response(JSON.stringify({ code: status, data }), {

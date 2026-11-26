@@ -100,7 +100,9 @@ enum LoginWebViewFactory {
         let (configuration, privateSettings) = ViewerWebViewController.makeConfiguration()
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.customUserAgent = ViewerConfiguration.userAgent
+        #if DEBUG
         webView.isInspectable = true
+        #endif
         return Result(webView: webView, privateSettings: privateSettings)
     }
 

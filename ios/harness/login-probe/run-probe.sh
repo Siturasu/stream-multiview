@@ -2,8 +2,10 @@
 set -euo pipefail
 SCRIPT_DIR="${0:A:h}"
 REPO="${SCRIPT_DIR:h:h:h}"
-STAGE="/tmp/sv-login-probe-webroot"
-BIN_DIR="/tmp/sv-login-probe-build"
+# Per-user TMPDIR (same as ../run.sh) so another account cannot pre-create
+# these directories or plant the binary that SKIP_BUILD=1 runs.
+STAGE="${TMPDIR:-/tmp}/sv-login-probe-webroot"
+BIN_DIR="${TMPDIR:-/tmp}/sv-login-probe-build"
 PROCESS_NAME="sv-login-probe"
 BIN="$BIN_DIR/$PROCESS_NAME"
 
@@ -22,4 +24,5 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     -module-cache-path "$BIN_DIR/module-cache" \
     -o "$BIN" "$REPO"/ios/Sources/Core/*.swift "$SCRIPT_DIR"/main.swift
 fi
+[[ -O "$BIN_DIR" && -O "$BIN" ]] || { echo "refusing to run $BIN: not owned by $USER" >&2; exit 1; }
 exec "$BIN" "$STAGE" "$@"

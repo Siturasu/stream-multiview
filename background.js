@@ -23,6 +23,7 @@ const REQUEST_TIMEOUT_MS = 12_000;
 const TEXT_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/g;
 export const YOUTUBE_EMBED_IDENTITY_RULE_ID = 731_001;
 export const CIME_FRAME_EMBED_RULE_ID = 731_003;
+export const CIME_CHAT_FRAME_EMBED_RULE_ID = 731_004;
 const CIME_ORIGIN = "https://ci.me";
 const EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
 
@@ -70,26 +71,26 @@ export async function prepareYoutubePlayer(extensionApi = globalThis.chrome) {
   };
 }
 
-// CIME sends `X-Frame-Options: SAMEORIGIN` on its live page and a restrictive
-// `frame-ancestors` on its chat page. Drop the framing headers only for
-// sub_frame navigations this extension starts itself.
-export function cimeFrameEmbedRule(extensionId) {
-  if (typeof extensionId !== "string" || !EXTENSION_ID_PATTERN.test(extensionId)) {
-    return null;
-  }
+// CIME framing headers, checked 2026-11-27 with curl:
+// - player page `/@slug/live` sends `X-Frame-Options: SAMEORIGIN` and no CSP,
+//   so only X-Frame-Options is removed and any CSP ci.me adds later stays.
+// - chat page `/@slug/live/chat` sends `Content-Security-Policy:
+//   frame-ancestors 'self' https://studio.ci.me` (no other directive). DNR can
+//   only drop the whole header, so the CSP is removed on this path only.
+// Both rules apply only to sub_frame navigations this extension starts itself.
+const CIME_SLUG_PATH = "^https://ci\\.me/@[a-z0-9._-]+";
+const CIME_QUERY = "(\\?[^#]*)?$";
 
+function cimeFrameRule(id, regexFilter, headers, extensionId) {
   return {
-    id: CIME_FRAME_EMBED_RULE_ID,
+    id,
     priority: 1,
     action: {
       type: "modifyHeaders",
-      responseHeaders: [
-        { header: "Content-Security-Policy", operation: "remove" },
-        { header: "X-Frame-Options", operation: "remove" },
-      ],
+      responseHeaders: headers.map((header) => ({ header, operation: "remove" })),
     },
     condition: {
-      urlFilter: "|https://ci.me/@",
+      regexFilter,
       requestDomains: ["ci.me"],
       initiatorDomains: [extensionId],
       resourceTypes: ["sub_frame"],
@@ -97,17 +98,38 @@ export function cimeFrameEmbedRule(extensionId) {
   };
 }
 
+export function cimeFrameEmbedRules(extensionId) {
+  if (typeof extensionId !== "string" || !EXTENSION_ID_PATTERN.test(extensionId)) {
+    return null;
+  }
+
+  return [
+    cimeFrameRule(
+      CIME_FRAME_EMBED_RULE_ID,
+      `${CIME_SLUG_PATH}/live${CIME_QUERY}`,
+      ["X-Frame-Options"],
+      extensionId,
+    ),
+    cimeFrameRule(
+      CIME_CHAT_FRAME_EMBED_RULE_ID,
+      `${CIME_SLUG_PATH}/live/chat${CIME_QUERY}`,
+      ["Content-Security-Policy", "X-Frame-Options"],
+      extensionId,
+    ),
+  ];
+}
+
 export async function prepareCimeFrames(extensionApi = globalThis.chrome) {
-  const rule = cimeFrameEmbedRule(extensionApi?.runtime?.id);
-  if (!rule || !extensionApi?.declarativeNetRequest?.updateDynamicRules) {
+  const rules = cimeFrameEmbedRules(extensionApi?.runtime?.id);
+  if (!rules || !extensionApi?.declarativeNetRequest?.updateDynamicRules) {
     throw new SafeRequestError("씨미 플레이어 표시 규칙을 준비하지 못했습니다.");
   }
 
   await extensionApi.declarativeNetRequest.updateDynamicRules({
-    removeRuleIds: [CIME_FRAME_EMBED_RULE_ID],
-    addRules: [rule],
+    removeRuleIds: [CIME_FRAME_EMBED_RULE_ID, CIME_CHAT_FRAME_EMBED_RULE_ID],
+    addRules: rules,
   });
-  return { ruleId: CIME_FRAME_EMBED_RULE_ID };
+  return { ruleId: CIME_FRAME_EMBED_RULE_ID, chatRuleId: CIME_CHAT_FRAME_EMBED_RULE_ID };
 }
 
 async function fetchWithTimeout(url, options) {

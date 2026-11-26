@@ -1,6 +1,6 @@
 # Claude Code 인수인계 및 작업지시서: Stream Multiview 로그인 미해결
 
-작성일: 2026-09-13. 작업 폴더: `/Users/dw.kang/Documents/Claude/Projects/personal/stream-multiview`.
+작성일: 2026-09-13. 작업 폴더: 이 저장소 루트.
 사용자가 직접 iPad를 확인하며 Claude Code와 재현·수정을 진행하기 위한 문서다.
 Codex는 이번 차례에 이 문서와 HANDOFF만 작성했으며, 여기 적은 후속 진단·수정을 실행하지 않았다.
 

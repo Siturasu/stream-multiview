@@ -33,7 +33,7 @@ curl -fsSL "$FEED" -o "$TMP_JSON"
 # The feed is one JSON object; node reads it without any npm dependency.
 read -r VERSION URL <<EOF
 $(node -e '
-const feed = require(process.argv[1]);
+const feed = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
 const stable = feed.channels.Stable;
 const entry = stable.downloads.chrome.find((d) => d.platform === process.argv[2]);
 if (!entry) { console.error("no download for " + process.argv[2]); process.exit(1); }
