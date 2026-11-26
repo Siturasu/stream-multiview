@@ -1,6 +1,17 @@
 (() => {
   "use strict";
 
+  // Chrome: content/viewer-origin.js runs in the isolated world just before
+  // this MAIN-world script (manifest.json order) and leaves this extension's
+  // own origin on <html>. Take it first and remove it, before any page script
+  // exists to read or replace it.
+  const extensionViewerOrigin = (() => {
+    const dataset = document.documentElement?.dataset;
+    const value = dataset?.svExtensionOrigin;
+    if (dataset) delete dataset.svExtensionOrigin;
+    return typeof value === "string" && value.startsWith("chrome-extension://") ? value : null;
+  })();
+
   const params = new URLSearchParams(location.search);
   const isChatRoute = /\/chat\/?$/.test(location.pathname);
   // A /video replay must not be resumed by a mute command: the original
@@ -37,23 +48,25 @@
   let desiredMuted = params.get("muted") !== "0";
   let viewerOrigin = null;
   const pendingViewerMessages = new Map();
-  // Chrome hosts the viewer on chrome-extension://<id>. Other hosts (the iOS
-  // WKWebView wrapper) announce their viewer origin before this script runs.
-  const viewerOriginPattern = /^chrome-extension:\/\/[a-p]{32}$/;
+  // The iPad and Android wrappers serve the viewer under the CHZZK origin
+  // (ViewerConfiguration.swift, WrapperConfig.kt) and announce it before this
+  // script runs. Only that fixed origin is honoured, compared exactly.
+  const wrapperViewerOrigins = new Set(["https://chzzk.naver.com"]);
   const configuredViewerOrigin =
-    typeof globalThis.__stellaViewViewerOrigin === "string"
+    typeof globalThis.__stellaViewViewerOrigin === "string" &&
+    wrapperViewerOrigins.has(globalThis.__stellaViewViewerOrigin)
       ? globalThis.__stellaViewViewerOrigin
       : null;
+  // The one document allowed to command this frame. Any other
+  // chrome-extension:// page that frames a ?sv=1 player is ignored.
+  const trustedViewerOrigin = extensionViewerOrigin ?? configuredViewerOrigin;
   // The wrappers inject this script with a viewer origin or as a managed
   // frame. Only they get the iPad media handling below; the Chrome extension
   // keeps the original mute/play behaviour so the player's own controls work.
   const wrapperHost = configuredViewerOrigin !== null || globalThis.__stellaViewManagedFrame === true;
 
   function isViewerOrigin(origin) {
-    return (
-      viewerOriginPattern.test(origin) ||
-      (configuredViewerOrigin !== null && origin === configuredViewerOrigin)
-    );
+    return trustedViewerOrigin !== null && origin === trustedViewerOrigin;
   }
 
   function writeQualityPreference() {

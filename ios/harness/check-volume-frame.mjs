@@ -18,9 +18,12 @@ const youtubeSource = fs.readFileSync(
   "utf8",
 );
 
-const viewerOrigin = "https://stream-multiview.invalid";
+// Both wrappers serve the viewer under the CHZZK origin
+// (ios/Sources/Core/ViewerConfiguration.swift, android WrapperConfig.kt).
+const viewerOrigin = "https://chzzk.naver.com";
 // Chrome extension ids are 32 letters from a to p.
 const chromeViewerOrigin = `chrome-extension://${"abcdefghijklmnop".repeat(2)}`;
+const otherExtensionOrigin = `chrome-extension://${"ponmlkjihgfedcba".repeat(2)}`;
 
 function check(label) {
   console.log(`ok: ${label}`);
@@ -151,7 +154,12 @@ function capabilities(parent) {
   return plain(parent.messages).filter(({ message }) => message.type === "volume-capability");
 }
 
-function runChzzkFrame({ videos = [], audio = audioSpy() } = {}) {
+function runChzzkFrame({
+  videos = [],
+  audio = audioSpy(),
+  origin = viewerOrigin,
+  extensionOrigin = null,
+} = {}) {
   // Each page-world execution owns its DOM prototypes; reset the play wrapper
   // the previous run installed on the shared test double.
   FakeMediaElement.prototype.play = nativeMediaPlay;
@@ -161,6 +169,9 @@ function runChzzkFrame({ videos = [], audio = audioSpy() } = {}) {
     postMessage(message, origin) { this.messages.push({ message, origin }); },
   };
   const root = new FakeElement("html");
+  // content/viewer-origin.js (isolated world) leaves this before the MAIN
+  // world script runs.
+  if (extensionOrigin) root.dataset.svExtensionOrigin = extensionOrigin;
   let mutationCallback = null;
   const document = {
     documentElement: root,
@@ -200,10 +211,11 @@ function runChzzkFrame({ videos = [], audio = audioSpy() } = {}) {
       setTimeout() { return 1; },
       clearTimeout() {},
     },
-    __stellaViewViewerOrigin: viewerOrigin,
+    __stellaViewViewerOrigin: origin,
   });
   vm.runInContext(chzzkSource, context, { filename: "content/chzzk-main.js" });
   return {
+    root,
     parent,
     audio,
     videos,
@@ -223,6 +235,7 @@ function runYouTubeFrame({
   pathname = "/embed/abcdef",
   search = "",
   origin = viewerOrigin,
+  extensionOrigin = null,
   player = null,
 } = {}) {
   const windowListeners = new Map();
@@ -231,6 +244,7 @@ function runYouTubeFrame({
     postMessage(message, target) { this.messages.push({ message, origin: target }); },
   };
   const root = new FakeElement("html");
+  if (extensionOrigin) root.dataset.svExtensionOrigin = extensionOrigin;
   let mutationCallback = null;
   const document = {
     documentElement: root,
@@ -267,6 +281,7 @@ function runYouTubeFrame({
   });
   vm.runInContext(youtubeSource, context, { filename: "content/youtube-volume-frame.js" });
   return {
+    root,
     parent,
     audio,
     videos,
@@ -456,10 +471,15 @@ const setVolume = (volume) => ({ source: "stellaview", type: "set-volume", volum
 
 // (g) Chrome runs the same file as a MAIN-world content script: no origin is
 // injected, the viewer marks its own frames with sv=1, and the commanding
-// parent must look like a chrome-extension:// viewer.
+// parent must be this extension's own viewer origin.
 {
   const video = new FakeVideoElement({ currentSrc: "https://r1---sn.googlevideo.com/videoplayback" });
-  const frame = runYouTubeFrame({ videos: [video], origin: null, search: "?sv=1" });
+  const frame = runYouTubeFrame({
+    videos: [video],
+    origin: null,
+    extensionOrigin: chromeViewerOrigin,
+    search: "?sv=1",
+  });
 
   frame.send(setVolume(0.7), { origin: "https://evil.example" });
   assert.equal(video.volumeWrites, 0, "a stranger cannot command a Chrome tile");
@@ -473,7 +493,71 @@ const setVolume = (volume) => ({ source: "stellaview", type: "set-volume", volum
       origin: chromeViewerOrigin,
     },
   ]);
-  check("youtube frame on Chrome: sv=1 plus a chrome-extension parent origin");
+  check("youtube frame on Chrome: sv=1 plus this extension's parent origin");
+}
+
+// (i) Another extension can frame a ?sv=1 player from its own
+// chrome-extension:// page. Only this extension's origin, handed over by the
+// isolated-world content/viewer-origin.js, may command a tile; any other
+// extension origin gets no mute, no volume and no reply.
+{
+  const ownMessages = (parent, origin) => plain(parent.messages).filter((entry) => entry.origin === origin);
+
+  const video = new FakeVideoElement({ currentSrc: "https://chzzk.naver.com/live.m3u8" });
+  const chzzk = runChzzkFrame({ videos: [video], origin: null, extensionOrigin: chromeViewerOrigin });
+  await settle();
+  assert.equal(chzzk.root.dataset.svExtensionOrigin, undefined, "chzzk: the handed-over origin is consumed");
+  const mutedBefore = video.muted;
+  chzzk.send({ source: "stellaview", type: "set-muted", muted: !mutedBefore }, { origin: otherExtensionOrigin });
+  chzzk.send(setVolume(0.2), { origin: otherExtensionOrigin });
+  await settle();
+  assert.equal(video.muted, mutedBefore, "chzzk: another extension cannot change mute");
+  assert.equal(video.volumeWrites, 0, "chzzk: another extension cannot change volume");
+  assert.equal(ownMessages(chzzk.parent, otherExtensionOrigin).length, 0, "chzzk: another extension gets no reply");
+  chzzk.send(setVolume(0.2), { origin: chromeViewerOrigin });
+  assert.equal(video.volume, 0.2, "chzzk: the own extension still commands the tile");
+  assert.ok(ownMessages(chzzk.parent, chromeViewerOrigin).length > 0, "chzzk: replies go to the own extension");
+
+  const youtubeVideo = new FakeVideoElement({ currentSrc: "https://r1---sn.googlevideo.com/videoplayback" });
+  const youtube = runYouTubeFrame({
+    videos: [youtubeVideo],
+    origin: null,
+    extensionOrigin: chromeViewerOrigin,
+    search: "?sv=1",
+  });
+  assert.equal(youtube.root.dataset.svExtensionOrigin, undefined, "youtube: the handed-over origin is consumed");
+  youtube.send(setVolume(0.3), { origin: otherExtensionOrigin });
+  assert.equal(youtubeVideo.volumeWrites, 0, "youtube: another extension cannot change volume");
+  assert.equal(ownMessages(youtube.parent, otherExtensionOrigin).length, 0, "youtube: another extension gets no reply");
+  youtube.send(setVolume(0.3), { origin: chromeViewerOrigin });
+  assert.equal(youtubeVideo.volume, 0.3, "youtube: the own extension still commands the tile");
+
+  // Without the hand-over there is no trusted origin at all: no
+  // chrome-extension:// origin is accepted on its shape alone.
+  const orphan = new FakeVideoElement({ currentSrc: "https://chzzk.naver.com/live.m3u8" });
+  const orphanChzzk = runChzzkFrame({ videos: [orphan], origin: null });
+  const orphanYoutubeVideo = new FakeVideoElement({ currentSrc: "https://r1---sn.googlevideo.com/videoplayback" });
+  const orphanYoutube = runYouTubeFrame({ videos: [orphanYoutubeVideo], origin: null, search: "?sv=1" });
+  for (const origin of [chromeViewerOrigin, otherExtensionOrigin]) {
+    orphanChzzk.send(setVolume(0.2), { origin });
+    orphanYoutube.send(setVolume(0.2), { origin });
+  }
+  assert.equal(orphan.volumeWrites, 0, "chzzk: no hand-over, no commands");
+  assert.equal(orphanYoutubeVideo.volumeWrites, 0, "youtube: no hand-over, no commands");
+
+  // A wrapper origin is honoured only when it is one of the wrappers' fixed
+  // viewer origins, compared exactly.
+  for (const configured of ["https://evil.example", otherExtensionOrigin, "https://chzzk.naver.com.evil.example"]) {
+    const stray = new FakeVideoElement({ currentSrc: "https://chzzk.naver.com/live.m3u8" });
+    const strayChzzk = runChzzkFrame({ videos: [stray], origin: configured });
+    strayChzzk.send(setVolume(0.2), { origin: configured });
+    assert.equal(stray.volumeWrites, 0, `chzzk: unlisted wrapper origin ${configured} is refused`);
+    const strayYoutubeVideo = new FakeVideoElement({ currentSrc: "https://r1---sn.googlevideo.com/videoplayback" });
+    const strayYoutube = runYouTubeFrame({ videos: [strayYoutubeVideo], origin: configured, search: "?sv=1" });
+    strayYoutube.send(setVolume(0.2), { origin: configured });
+    assert.equal(strayYoutubeVideo.volumeWrites, 0, `youtube: unlisted wrapper origin ${configured} is refused`);
+  }
+  check("other extension origins and unlisted wrapper origins cannot mute or set volume");
 }
 
 // (h) The panel is the single source of truth. YouTube's own volume model has
@@ -516,6 +600,63 @@ const setVolume = (volume) => ({ source: "stellaview", type: "set-volume", volum
   bareFrame.send(setVolume(0.4));
   assert.equal(bare.volume, 0.4, "a missing #movie_player must not break the element path");
   check("youtube frame: the panel value drives both the element and the player model");
+}
+
+// (j) The hand-over only works when Chrome runs content/viewer-origin.js
+// before each MAIN-world frame script on every URL that script covers, and
+// nothing outside the extension may reach its message handler.
+{
+  const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot, "manifest.json"), "utf8"));
+  const entries = manifest.content_scripts;
+  const handOver = entries.findIndex((entry) => entry.js?.includes("content/viewer-origin.js"));
+  assert.ok(handOver >= 0, "viewer-origin.js is declared");
+  assert.equal(entries[handOver].world ?? "ISOLATED", "ISOLATED");
+  assert.equal(entries[handOver].run_at, "document_start");
+  assert.equal(entries[handOver].all_frames, true);
+  for (const script of ["content/chzzk-main.js", "content/youtube-volume-frame.js"]) {
+    const index = entries.findIndex((entry) => entry.js?.includes(script));
+    assert.equal(entries[index].world, "MAIN", `${script} is a MAIN-world script`);
+    assert.ok(handOver < index, `viewer-origin.js is listed before ${script}`);
+    for (const match of entries[index].matches) {
+      assert.ok(entries[handOver].matches.includes(match), `viewer-origin.js also covers ${match}`);
+    }
+  }
+  assert.deepEqual(manifest.externally_connectable, { ids: [] }, "no other extension or page may connect");
+
+  // background.js answers only this extension's own pages.
+  const extensionId = "abcdefghijklmnop".repeat(2);
+  let listener = null;
+  globalThis.chrome = {
+    runtime: {
+      id: extensionId,
+      getURL: (value) => `chrome-extension://${extensionId}/${value}`,
+      onMessage: { addListener(callback) { listener = callback; } },
+    },
+  };
+  try {
+    await import("../../background.js?sender-check");
+  } finally {
+    delete globalThis.chrome;
+  }
+  assert.equal(typeof listener, "function", "background.js registers its message handler");
+  const request = { type: "prepare-cime-frames" };
+  const answered = (sender) => {
+    let responded = false;
+    const kept = listener(request, sender, () => { responded = true; });
+    return kept === true || responded;
+  };
+  assert.equal(answered({ id: extensionId, url: `chrome-extension://${extensionId}/viewer.html` }), true);
+  assert.equal(answered({ id: extensionId, url: `chrome-extension://${extensionId}/popup.html` }), true);
+  for (const sender of [
+    { id: "ponmlkjihgfedcba".repeat(2), url: `chrome-extension://${"ponmlkjihgfedcba".repeat(2)}/page.html` },
+    { id: extensionId, url: "https://chzzk.naver.com/live/abcdef?sv=1" },
+    { id: extensionId },
+    {},
+    undefined,
+  ]) {
+    assert.equal(answered(sender), false, `refused sender ${JSON.stringify(sender)}`);
+  }
+  check("manifest orders the origin hand-over first; background.js answers only its own pages");
 }
 
 console.log("PASS per-tile volume: element/webaudio/none modes, deferred capability, origin policy");

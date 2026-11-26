@@ -9,6 +9,17 @@
 (() => {
   "use strict";
 
+  // Chrome: content/viewer-origin.js runs in the isolated world just before
+  // this MAIN-world script (manifest.json order) and leaves this extension's
+  // own origin on <html>. Take it first and remove it, before any page script
+  // exists to read or replace it.
+  const extensionViewerOrigin = (() => {
+    const dataset = document.documentElement?.dataset;
+    const value = dataset?.svExtensionOrigin;
+    if (dataset) delete dataset.svExtensionOrigin;
+    return typeof value === "string" && value.startsWith("chrome-extension://") ? value : null;
+  })();
+
   if (location.hostname !== "www.youtube.com" || !/^\/embed\//.test(location.pathname)) return;
   let isSubframe = false;
   try {
@@ -18,27 +29,26 @@
   }
   if (!isSubframe) return;
 
-  // Chrome hosts the viewer on chrome-extension://<id>. Other hosts (the
-  // wrappers) announce their viewer origin before this script runs.
-  const viewerOriginPattern = /^chrome-extension:\/\/[a-p]{32}$/;
+  // The wrappers serve the viewer under the CHZZK origin and announce it
+  // before this script runs. Only that fixed origin is honoured, compared
+  // exactly.
+  const wrapperViewerOrigins = new Set(["https://chzzk.naver.com"]);
   const configuredViewerOrigin =
-    typeof globalThis.__stellaViewViewerOrigin === "string" ? globalThis.__stellaViewViewerOrigin : null;
-  if (configuredViewerOrigin !== null) {
-    try {
-      if (new URL(configuredViewerOrigin).origin !== configuredViewerOrigin) return;
-    } catch {
-      return;
-    }
-  } else if (new URLSearchParams(location.search).get("sv") !== "1") {
+    typeof globalThis.__stellaViewViewerOrigin === "string" &&
+    wrapperViewerOrigins.has(globalThis.__stellaViewViewerOrigin)
+      ? globalThis.__stellaViewViewerOrigin
+      : null;
+  if (configuredViewerOrigin === null && new URLSearchParams(location.search).get("sv") !== "1") {
     // A plain YouTube embed on some other page is none of our business.
     return;
   }
 
+  // The one document allowed to command this frame. Any other
+  // chrome-extension:// page that frames a ?sv=1 embed is ignored.
+  const trustedViewerOrigin = extensionViewerOrigin ?? configuredViewerOrigin;
+
   function isViewerOrigin(origin) {
-    return (
-      viewerOriginPattern.test(origin) ||
-      (configuredViewerOrigin !== null && origin === configuredViewerOrigin)
-    );
+    return trustedViewerOrigin !== null && origin === trustedViewerOrigin;
   }
 
   // Set once a command from an accepted origin arrives; the capability report

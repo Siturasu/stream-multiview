@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Stream Multiview",
   "short_name": "Stream Multiview",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "개인용 영상 멀티뷰 확장 프로그램",
   "minimum_chrome_version": "121",
   "icons": {
@@ -37,6 +37,17 @@
     "type": "module"
   },
   "content_scripts": [
+    {
+      "matches": [
+        "https://chzzk.naver.com/*",
+        "https://www.youtube.com/embed/*"
+      ],
+      "js": [
+        "content/viewer-origin.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_start"
+    },
     {
       "matches": [
         "https://chzzk.naver.com/*"
@@ -89,6 +100,9 @@
       "world": "MAIN"
     }
   ],
+  "externally_connectable": {
+    "ids": []
+  },
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'; frame-src https://chzzk.naver.com https://www.youtube.com https://ci.me; connect-src https://api.chzzk.naver.com https://www.youtube.com https://ci.me; img-src 'self' data: https://*.pstatic.net https://*.naver.net https://*.googleusercontent.com https://streaming.cf.ci.me;"
   }

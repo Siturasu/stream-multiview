@@ -654,8 +654,15 @@ if (extensionApi?.declarativeNetRequest?.updateDynamicRules) {
 }
 
 if (extensionApi?.runtime?.onMessage) {
-  extensionApi.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  // Only this extension's own pages (popup.html, viewer.html) send requests.
+  // Content scripts never do, and without an onMessageExternal listener other
+  // extensions cannot reach this handler; the sender check keeps it that way.
+  const extensionPagePrefix = extensionApi.runtime.getURL("");
+  extensionApi.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (
+      sender?.id !== extensionApi.runtime.id ||
+      typeof sender.url !== "string" ||
+      !sender.url.startsWith(extensionPagePrefix) ||
       !message ||
       typeof message !== "object" ||
       ![

@@ -179,7 +179,7 @@ function runChzzkFrame({ search = "", managed = false, videos = [] } = {}) {
       clearTimeout() {},
     },
     __stellaViewManagedFrame: managed,
-    __stellaViewViewerOrigin: "https://stream-multiview.invalid",
+    __stellaViewViewerOrigin: "https://chzzk.naver.com",
   });
   vm.runInContext(chzzkSource, context, { filename: "content/chzzk-main.js" });
   return { document, parent, root, videos, dispatchMessage: (event) => windowListeners.get("message")?.(event) };
@@ -217,7 +217,7 @@ function runChzzkFrame({ search = "", managed = false, videos = [] } = {}) {
   tracked.muted = false;
   tracked.defaultMuted = false;
   frame.dispatchMessage({
-    source: {}, origin: "https://stream-multiview.invalid",
+    source: {}, origin: "https://chzzk.naver.com",
     data: { source: "stellaview", type: "set-muted", muted: false },
   });
   assert.equal(tracked.muted, false, "spoofed WindowProxy is ignored");
@@ -227,7 +227,7 @@ function runChzzkFrame({ search = "", managed = false, videos = [] } = {}) {
   });
   assert.equal(tracked.muted, false, "spoofed origin is ignored");
   frame.dispatchMessage({
-    source: frame.parent, origin: "https://stream-multiview.invalid",
+    source: frame.parent, origin: "https://chzzk.naver.com",
     data: { source: "stellaview", type: "set-muted", muted: false },
   });
   assert.equal(tracked.muted, false, "valid parent can unmute");
@@ -240,7 +240,7 @@ function runChzzkFrame({ search = "", managed = false, videos = [] } = {}) {
   tracked.paused = true;
   const startsBeforeMute = tracked.playSnapshots.length;
   frame.dispatchMessage({
-    source: frame.parent, origin: "https://stream-multiview.invalid",
+    source: frame.parent, origin: "https://chzzk.naver.com",
     data: { source: "stellaview", type: "set-muted", muted: false },
   });
   tracked.emit("resize");
