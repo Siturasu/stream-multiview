@@ -24,6 +24,8 @@ const TEXT_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/g;
 export const YOUTUBE_EMBED_IDENTITY_RULE_ID = 731_001;
 export const CIME_FRAME_EMBED_RULE_ID = 731_003;
 export const CIME_CHAT_FRAME_EMBED_RULE_ID = 731_004;
+export const CHZZK_FRAME_EMBED_RULE_ID = 731_005;
+export const CHZZK_CHAT_FRAME_EMBED_RULE_ID = 731_006;
 const CIME_ORIGIN = "https://ci.me";
 const EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
 
@@ -130,6 +132,77 @@ export async function prepareCimeFrames(extensionApi = globalThis.chrome) {
     addRules: rules,
   });
   return { ruleId: CIME_FRAME_EMBED_RULE_ID, chatRuleId: CIME_CHAT_FRAME_EMBED_RULE_ID };
+}
+
+// CHZZK framing headers, checked 2026-11-27 with curl: `/live/<id>`,
+// `/live/<id>/chat` and `/video/<no>` all send `Content-Security-Policy:
+// frame-ancestors 'self' https://naver.com https://*.naver.com` (no other
+// directive, no X-Frame-Options). Only `/embed/*` is exempt, and CHZZK serves
+// an embed player there for clips only, not for lives or replays.
+// DNR cannot edit one directive, so the header is replaced with the same
+// frame-ancestors list plus this extension's origin. Unlike removing the
+// header, framing by any other ancestor stays blocked. Both rules apply only
+// to sub_frame navigations this extension starts itself. The id parts are
+// open-ended on purpose: `[0-9a-f]{32}` compiles past DNR's 2KB regex memory
+// limit and Chrome rejects the rule.
+export const CHZZK_FRAME_ANCESTORS = "'self' https://naver.com https://*.naver.com";
+const CHZZK_QUERY = "(\\?[^#]*)?$";
+
+function chzzkFrameRule(id, regexFilter, extensionId) {
+  return {
+    id,
+    priority: 1,
+    action: {
+      type: "modifyHeaders",
+      responseHeaders: [
+        {
+          header: "Content-Security-Policy",
+          operation: "set",
+          value: `frame-ancestors ${CHZZK_FRAME_ANCESTORS} chrome-extension://${extensionId}`,
+        },
+      ],
+    },
+    condition: {
+      regexFilter,
+      // The viewer only builds lowercase CHZZK URLs (makeChzzkStream lowercases).
+      isUrlFilterCaseSensitive: true,
+      requestDomains: ["chzzk.naver.com"],
+      initiatorDomains: [extensionId],
+      resourceTypes: ["sub_frame"],
+    },
+  };
+}
+
+export function chzzkFrameEmbedRules(extensionId) {
+  if (typeof extensionId !== "string" || !EXTENSION_ID_PATTERN.test(extensionId)) {
+    return null;
+  }
+
+  return [
+    chzzkFrameRule(
+      CHZZK_FRAME_EMBED_RULE_ID,
+      `^https://chzzk\\.naver\\.com/(live/[0-9a-f]+|video/[1-9][0-9]*)${CHZZK_QUERY}`,
+      extensionId,
+    ),
+    chzzkFrameRule(
+      CHZZK_CHAT_FRAME_EMBED_RULE_ID,
+      `^https://chzzk\\.naver\\.com/live/[0-9a-f]+/chat${CHZZK_QUERY}`,
+      extensionId,
+    ),
+  ];
+}
+
+export async function prepareChzzkFrames(extensionApi = globalThis.chrome) {
+  const rules = chzzkFrameEmbedRules(extensionApi?.runtime?.id);
+  if (!rules || !extensionApi?.declarativeNetRequest?.updateDynamicRules) {
+    throw new SafeRequestError("치지직 플레이어 표시 규칙을 준비하지 못했습니다.");
+  }
+
+  await extensionApi.declarativeNetRequest.updateDynamicRules({
+    removeRuleIds: [CHZZK_FRAME_EMBED_RULE_ID, CHZZK_CHAT_FRAME_EMBED_RULE_ID],
+    addRules: rules,
+  });
+  return { ruleId: CHZZK_FRAME_EMBED_RULE_ID, chatRuleId: CHZZK_CHAT_FRAME_EMBED_RULE_ID };
 }
 
 async function fetchWithTimeout(url, options) {
@@ -625,6 +698,8 @@ async function handleMessage(message, extensionApi) {
       return { ok: true, ...(await prepareYoutubePlayer(extensionApi)) };
     case "prepare-cime-frames":
       return { ok: true, ...(await prepareCimeFrames(extensionApi)) };
+    case "prepare-chzzk-frames":
+      return { ok: true, ...(await prepareChzzkFrames(extensionApi)) };
     default:
       return null;
   }
@@ -638,6 +713,7 @@ if (extensionApi?.runtime?.onInstalled && extensionApi?.storage?.local) {
       setInstallDefaults(extensionApi),
       prepareYoutubePlayer(extensionApi),
       prepareCimeFrames(extensionApi),
+      prepareChzzkFrames(extensionApi),
     ]).catch((error) => {
       console.error("Failed to initialize extension defaults", error);
     });
@@ -650,6 +726,9 @@ if (extensionApi?.declarativeNetRequest?.updateDynamicRules) {
   });
   void prepareCimeFrames(extensionApi).catch((error) => {
     console.error("Failed to initialize CIME frame rule", error);
+  });
+  void prepareChzzkFrames(extensionApi).catch((error) => {
+    console.error("Failed to initialize CHZZK frame rule", error);
   });
 }
 
@@ -672,6 +751,7 @@ if (extensionApi?.runtime?.onMessage) {
         "open-viewer",
         "prepare-youtube-player",
         "prepare-cime-frames",
+        "prepare-chzzk-frames",
       ].includes(message.type)
     ) {
       return false;

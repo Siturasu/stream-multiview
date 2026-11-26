@@ -4,7 +4,7 @@
 
 ## 크롬 확장 기능
 
-버전 0.1.10. 지원 주소 형식은 `chzzk.naver.com/live/채널ID`, `chzzk.naver.com/video/숫자ID`, 유튜브 주소, `ci.me/@slug`.
+버전 0.1.11. 지원 주소 형식은 `chzzk.naver.com/live/채널ID`, `chzzk.naver.com/video/숫자ID`, 유튜브 주소, `ci.me/@slug`.
 
 - 스텔라이브 4기 ABYSS(하나요 히요리, 토키노 메리, 코가네 랑, 시즈키 토아)가 멤버 목록에 있다.
 - 씨미(ci.me) 채널을 타일로 추가할 수 있다. 함께 보기에 헤비(씨미)가 있다. 확장에서는 ci.me 페이지를 프레임으로 넣고,
@@ -28,7 +28,7 @@
 ```
 npm run check              # 모든 스크립트 문법 검사
 npm run check:volume-panel # 볼륨 패널 상태와 명령, 저장
-npm run check:chzzk-vod    # 치지직 다시보기 주소와 독립 소리
+npm run check:chzzk-vod    # 치지직 다시보기 주소, 독립 소리, 프레임 DNR 규칙
 npm run check:cime         # 씨미 주소 파싱, 멤버, 매니페스트와 DNR 규칙, 플레이어 소스 단언
 npm run check:volume-frame # 프레임의 set-volume 처리와 오리진 정책
 npm run check:ios-fullscreen

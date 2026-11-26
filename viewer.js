@@ -94,6 +94,7 @@ const siteVolumes = new Map();
 const volumeRows = new Map();
 let youtubeIdentityReady = false;
 let cimeFramesReady = false;
+let chzzkFramesReady = false;
 let fullscreenControlsTimer = null;
 
 function frameOrigin(stream) {
@@ -223,6 +224,18 @@ async function prepareCimeFrames() {
     );
   }
   cimeFramesReady = true;
+}
+
+// Extension only: installs the DNR rule that lets chzzk pages load in frames.
+async function prepareChzzkFrames() {
+  if (chzzkFramesReady || isWrapperHost) return;
+  const response = await chrome.runtime.sendMessage({ type: "prepare-chzzk-frames" });
+  if (!response?.ok) {
+    throw new Error(
+      response?.error || "치지직 플레이어를 준비하지 못했습니다. 확장 프로그램을 새로고침해 주세요.",
+    );
+  }
+  chzzkFramesReady = true;
 }
 
 function safeStream(value) {
@@ -385,6 +398,7 @@ async function toggleMember(stream) {
   } else {
     if (stream.platform === "youtube") await prepareYoutubeIdentity();
     if (stream.platform === "cime") await prepareCimeFrames();
+    if (stream.platform === "chzzk") await prepareChzzkFrames();
     await setStreams([...streams, stream]);
   }
   closeCompactPanels();
@@ -1109,6 +1123,7 @@ async function resolveStream(input) {
   stream = safeStream(stream);
   if (!stream) throw new Error("방송 주소를 안전하게 해석하지 못했습니다.");
   if (stream.platform === "youtube") await prepareYoutubeIdentity();
+  if (stream.platform === "chzzk") await prepareChzzkFrames();
   if (stream.platform === "cime") {
     await prepareCimeFrames();
     if (!stream.name) {
@@ -1506,6 +1521,14 @@ async function initialize() {
     } catch (error) {
       console.error("Failed to prepare CIME frames", error);
       setFormMessage(error?.message || "씨미 플레이어를 준비하지 못했습니다.");
+    }
+  }
+  if (!isWrapperHost && streams.some((stream) => stream.platform === "chzzk")) {
+    try {
+      await prepareChzzkFrames();
+    } catch (error) {
+      console.error("Failed to prepare CHZZK frames", error);
+      setFormMessage(error?.message || "치지직 플레이어를 준비하지 못했습니다.");
     }
   }
 

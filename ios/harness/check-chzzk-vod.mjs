@@ -266,4 +266,100 @@ function runChzzkFrame({ search = "", managed = false, videos = [] } = {}) {
   check("new VOD videos are inline before play and parent audio policy resists spoofing/site changes", true);
 }
 
+// background.js: the CHZZK frame rules only rewrite frame-ancestors, only for
+// the player and chat URLs this extension builds, and only for its own frames.
+{
+  const savedChrome = globalThis.chrome;
+  delete globalThis.chrome;
+  let background;
+  try {
+    background = await import("../../background.js?chzzk-frame-rules");
+  } finally {
+    if (savedChrome !== undefined) globalThis.chrome = savedChrome;
+  }
+  const {
+    chzzkFrameEmbedRules,
+    CHZZK_FRAME_ANCESTORS,
+    CHZZK_FRAME_EMBED_RULE_ID,
+    CHZZK_CHAT_FRAME_EMBED_RULE_ID,
+    CIME_FRAME_EMBED_RULE_ID,
+    CIME_CHAT_FRAME_EMBED_RULE_ID,
+    YOUTUBE_EMBED_IDENTITY_RULE_ID,
+  } = background;
+  const extensionId = "a".repeat(32);
+  for (const bad of [undefined, "", "not-an-id", "A".repeat(32), "q".repeat(32), "a".repeat(31)]) {
+    assert.equal(chzzkFrameEmbedRules(bad), null, String(bad));
+  }
+  const [playerRule, chatRule] = chzzkFrameEmbedRules(extensionId);
+  assert.equal(playerRule.id, CHZZK_FRAME_EMBED_RULE_ID);
+  assert.equal(chatRule.id, CHZZK_CHAT_FRAME_EMBED_RULE_ID);
+  assert.equal(
+    new Set([
+      CHZZK_FRAME_EMBED_RULE_ID,
+      CHZZK_CHAT_FRAME_EMBED_RULE_ID,
+      CIME_FRAME_EMBED_RULE_ID,
+      CIME_CHAT_FRAME_EMBED_RULE_ID,
+      YOUTUBE_EMBED_IDENTITY_RULE_ID,
+    ]).size,
+    5,
+    "DNR rule ids are distinct",
+  );
+  assert.equal(CHZZK_FRAME_ANCESTORS, "'self' https://naver.com https://*.naver.com");
+  for (const rule of [playerRule, chatRule]) {
+    assert.equal(rule.action.type, "modifyHeaders");
+    assert.equal(rule.action.requestHeaders, undefined);
+    assert.deepEqual(rule.action.responseHeaders, [
+      {
+        header: "Content-Security-Policy",
+        operation: "set",
+        value: `frame-ancestors 'self' https://naver.com https://*.naver.com chrome-extension://${extensionId}`,
+      },
+    ]);
+    assert.equal(rule.condition.isUrlFilterCaseSensitive, true);
+    assert.deepEqual(rule.condition.requestDomains, ["chzzk.naver.com"]);
+    assert.deepEqual(rule.condition.initiatorDomains, [extensionId]);
+    assert.deepEqual(rule.condition.resourceTypes, ["sub_frame"]);
+  }
+  const matches = (rule, url) => new RegExp(rule.condition.regexFilter).test(url);
+  // A {32} quantifier compiles past DNR's 2KB regex memory limit in Chrome 158
+  // (the rule is rejected), so the id parts stay open-ended.
+  for (const rule of [playerRule, chatRule]) assert.doesNotMatch(rule.condition.regexFilter, /\{\d/);
+  const channelId = "0b33823ac81de48d5b78a38cdbc0ab94";
+  const live = { platform: "chzzk", channelId };
+  const video = { platform: "chzzk", videoId: "14782779" };
+  const players = [
+    streamToPlayerUrl(live),
+    streamToPlayerUrl(live, { quality: "720p", gridBypass: false }),
+    streamToPlayerUrl(video),
+  ];
+  const chat = streamToChatUrl(live);
+  for (const url of players) assert.ok(matches(playerRule, url) && !matches(chatRule, url), url);
+  assert.ok(matches(chatRule, chat) && !matches(playerRule, chat), chat);
+  for (const other of [
+    "https://chzzk.naver.com/",
+    `https://chzzk.naver.com/${channelId}`,
+    `https://chzzk.naver.com/live/${channelId}/simple`,
+    `https://chzzk.naver.com/live/${channelId}/chat/extra`,
+    `https://chzzk.naver.com/iframe/live/${channelId}/chat`,
+    "https://chzzk.naver.com/live/short",
+    "https://chzzk.naver.com/video/0123",
+    "https://chzzk.naver.com/videos",
+    "https://chzzk.naver.com/embed/clip/abc",
+    `https://api.chzzk.naver.com/service/v3/channels/${channelId}/live-detail`,
+    `https://chzzk.naver.com.evil.example/live/${channelId}`,
+    `https://m.chzzk.naver.com/live/${channelId}`,
+    `http://chzzk.naver.com/live/${channelId}`,
+    `https://chzzk.naver.com/live/${channelId}#x`,
+  ]) {
+    assert.ok(!matches(playerRule, other) && !matches(chatRule, other), other);
+  }
+  check("CHZZK frame rules: CSP set to frame-ancestors plus this extension only, player and chat URLs only", true);
+
+  assert.match(viewerSource, /type: "prepare-chzzk-frames"/);
+  assert.match(viewerSource, /async function prepareChzzkFrames\(\) \{\n  if \(chzzkFramesReady \|\| isWrapperHost\) return;/);
+  assert.match(viewerSource, /if \(stream\.platform === "chzzk"\) await prepareChzzkFrames\(\);\n    await setStreams/);
+  assert.match(viewerSource, /streams\.some\(\(stream\) => stream\.platform === "chzzk"\)\) \{\n    try \{\n      await prepareChzzkFrames\(\);/);
+  check("viewer.js prepares the CHZZK frame rule before adding or restoring CHZZK tiles", true);
+}
+
 console.log("CHZZK VOD parsing, independent audio, muted restart, and frame policy checks passed");

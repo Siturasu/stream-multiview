@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Stream Multiview",
   "short_name": "Stream Multiview",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "개인용 영상 멀티뷰 확장 프로그램",
   "minimum_chrome_version": "121",
   "icons": {
