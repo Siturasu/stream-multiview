@@ -76,6 +76,8 @@ Stable 로그인에서 `Invalid server response`와 `503 Service Temporarily Una
 Settings → User Customizations → Reset adi.pb에서 Keep Headers를 해제하고 재시도한다.
 [SideStore 유지보수자 안내](https://github.com/SideStore/SideStore/issues/1502#issuecomment-5627566740).
 
+SideStore 서명이 만료되면 맥에서 `SV_UDID=<iPad UDID> ios/harness/iloader-resign.sh`(UDID는 `xcrun devicectl list devices`로 확인, `--dry-run`은 설치 직전까지)로 다시 서명해 설치한다.
+
 앱 설치와 업데이트:
 
 1. SideStore > My Apps > 오른쪽 위 "+" > 파일 선택 > iCloud Drive에서 `StreamMultiview.ipa`.
