@@ -66,8 +66,9 @@ class ViewerWebViewController(
             setAcceptCookie(true)
             setAcceptThirdPartyCookies(webView, true)
         }
-        // Personal app: keep the DevTools socket so the harness can drive it.
-        WebView.setWebContentsDebuggingEnabled(true)
+        // DevTools socket only in debug builds (android/harness drives the debug APK).
+        // Release builds keep it off so adb cannot attach to the logged-in WebView.
+        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
 
         if (documentStartScriptsSupported) {
             WebViewCompat.addDocumentStartJavaScript(webView, assets.chzzkPageScript(), WrapperConfig.CHZZK_ORIGIN_RULES)

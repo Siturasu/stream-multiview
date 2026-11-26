@@ -67,14 +67,22 @@ android {
         }
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     sourceSets["main"].assets.srcDir(webRoot)
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
+}
+
+// Kotlin 2.2+ rejects the old android.kotlinOptions block.
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
